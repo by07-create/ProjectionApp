@@ -19,9 +19,39 @@ CACHE_MAX_AGE_MINUTES = 30
 
 TEAM_NAMES = {
     "ARIZONA_CARDINALS_NFL": "Arizona Cardinals",
-    "SEATTLE_SEAHAWKS_NFL": "Seattle Seahawks",
+    "ATLANTA_FALCONS_NFL": "Atlanta Falcons",
+    "BALTIMORE_RAVENS_NFL": "Baltimore Ravens",
     "BUFFALO_BILLS_NFL": "Buffalo Bills",
+    "CAROLINA_PANTHERS_NFL": "Carolina Panthers",
+    "CHICAGO_BEARS_NFL": "Chicago Bears",
+    "CINCINNATI_BENGALS_NFL": "Cincinnati Bengals",
+    "CLEVELAND_BROWNS_NFL": "Cleveland Browns",
+    "DALLAS_COWBOYS_NFL": "Dallas Cowboys",
+    "DENVER_BRONCOS_NFL": "Denver Broncos",
+    "DETROIT_LIONS_NFL": "Detroit Lions",
+    "GREEN_BAY_PACKERS_NFL": "Green Bay Packers",
+    "HOUSTON_TEXANS_NFL": "Houston Texans",
+    "INDIANAPOLIS_COLTS_NFL": "Indianapolis Colts",
+    "JACKSONVILLE_JAGUARS_NFL": "Jacksonville Jaguars",
+    "KANSAS_CITY_CHIEFS_NFL": "Kansas City Chiefs",
+    "LAS_VEGAS_RAIDERS_NFL": "Las Vegas Raiders",
+    "LOS_ANGELES_CHARGERS_NFL": "Los Angeles Chargers",
+    "LOS_ANGELES_RAMS_NFL": "Los Angeles Rams",
+    "MIAMI_DOLPHINS_NFL": "Miami Dolphins",
+    "MINNESOTA_VIKINGS_NFL": "Minnesota Vikings",
+    "NEW_ENGLAND_PATRIOTS_NFL": "New England Patriots",
+    "NEW_ORLEANS_SAINTS_NFL": "New Orleans Saints",
+    "NEW_YORK_GIANTS_NFL": "New York Giants",
+    "NEW_YORK_JETS_NFL": "New York Jets",
+    "PHILADELPHIA_EAGLES_NFL": "Philadelphia Eagles",
+    "PITTSBURGH_STEELERS_NFL": "Pittsburgh Steelers",
+    "SAN_FRANCISCO_49ERS_NFL": "San Francisco 49ers",
+    "SEATTLE_SEAHAWKS_NFL": "Seattle Seahawks",
+    "TAMPA_BAY_BUCCANEERS_NFL": "Tampa Bay Buccaneers",
+    "TENNESSEE_TITANS_NFL": "Tennessee Titans",
+    "WASHINGTON_COMMANDERS_NFL": "Washington Commanders"
 }
+
 
 DEFAULT_SCORING = {
     "Pass Yards": 0.04,
