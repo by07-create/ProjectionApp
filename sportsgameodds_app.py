@@ -171,7 +171,7 @@ else:
         st.stop()
 
 # -----------------------------
-# Extract Player Props
+# Extract Player Props with dynamic team mapping
 # -----------------------------
 rows = []
 for event in odds_data:
@@ -180,13 +180,23 @@ for event in odds_data:
     odds_list = list(odds_list_raw.values()) if isinstance(odds_list_raw, dict) else odds_list_raw
     players_list = event.get("players") or []
 
+    # Build dynamic team mapping from API data
+    dynamic_team_names = {}
+    for p in players_list:
+        if isinstance(p, dict):
+            team_id = p.get("teamID")
+            team_name = p.get("teamName")
+            if team_id and team_name:
+                dynamic_team_names[team_id] = team_name
+
+    # Build player map
     player_map = {}
     for p in players_list:
         if isinstance(p, dict):
             pid = p.get("playerID") or p.get("statEntityID")
             if pid:
                 team_id = p.get("teamID") or "Unknown Team"
-                team_name = TEAM_NAMES.get(team_id, team_id)
+                team_name = dynamic_team_names.get(team_id, team_id)
                 first = p.get("firstName")
                 last = p.get("lastName")
                 full_name = f"{first} {last}" if first and last else clean_player_name(pid)
