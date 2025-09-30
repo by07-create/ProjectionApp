@@ -52,7 +52,6 @@ DROPBOX_TOKEN = os.environ.get("DROPBOX_TOKEN")
 if not DROPBOX_TOKEN:
     st.error("Missing Dropbox token. Set DROPBOX_TOKEN in environment variables.")
     st.stop()
-
 dbx = dropbox.Dropbox(DROPBOX_TOKEN)
 
 # -----------------------------
@@ -96,16 +95,23 @@ def load_cache(max_age_minutes=CACHE_MAX_AGE_MINUTES):
         if (pd.Timestamp.now() - ts).total_seconds() < max_age_minutes * 60:
             return payload.get("data", [])
     except dropbox.exceptions.ApiError:
+        # File does not exist yet
+        return []
+    except Exception as e:
+        st.warning(f"Error loading cache: {e}")
         return []
     return []
 
 def save_cache(data):
     payload = {"timestamp": datetime.now().isoformat(), "data": data}
-    dbx.files_upload(
-        json.dumps(payload, indent=2).encode("utf-8"),
-        CACHE_FILE,
-        mode=dropbox.files.WriteMode.OVERWRITE
-    )
+    try:
+        dbx.files_upload(
+            json.dumps(payload, indent=2).encode("utf-8"),
+            CACHE_FILE,
+            mode=dropbox.files.WriteMode.overwrite
+        )
+    except dropbox.exceptions.ApiError as e:
+        st.error(f"Failed to save cache to Dropbox: {e}")
 
 def average_odds(odds_list):
     probs = [american_to_prob(o) for o in odds_list if o not in ["N/A", None, ""]]
@@ -214,7 +220,7 @@ for event in odds_data:
             odds_by_book.get("betmgm", {}).get("odds", "N/A"),
         ]
 
-        row = {
+        rows.append({
             "Match": match_name,
             "Team": player_info["team"],
             "Market": market_name,
@@ -226,8 +232,7 @@ for event in odds_data:
             "Caesars": odds_by_book.get("caesars", {}).get("odds", "N/A"),
             "ESPNBet": odds_by_book.get("espnbet", {}).get("odds", "N/A"),
             "BetMGM": odds_by_book.get("betmgm", {}).get("odds", "N/A"),
-        }
-        rows.append(row)
+        })
 
 if not rows:
     st.warning("No player prop odds found in the current events.")
