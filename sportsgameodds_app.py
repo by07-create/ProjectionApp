@@ -13,7 +13,7 @@ API_KEY_PRIMARY = "4ab2006b05f90755906bd881ecfaee3a"
 API_KEY_SECONDARY = "f5b3fb275ce1c78baa3bed7fab495f71"
 BASE_URL = "https://api.sportsgameodds.com/v2/events"
 LEAGUE_ID = "NFL"
-LIMIT = 1
+LIMIT = 20
 CACHE_FILE = "/odds_cache.json"  # Path in Dropbox
 CACHE_MAX_AGE_MINUTES = 30
 
