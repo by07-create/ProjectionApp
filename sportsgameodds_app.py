@@ -76,13 +76,23 @@ MARKET_MAP = {
 }
 
 # -----------------------------
-# DROPBOX CLIENT
+# DROPBOX CLIENT (Refresh Token Flow)
 # -----------------------------
-DROPBOX_TOKEN = os.environ.get("DROPBOX_TOKEN")
-if not DROPBOX_TOKEN:
-    st.error("Missing Dropbox token. Set DROPBOX_TOKEN in environment variables.")
+DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
+DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
+DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
+
+if not DROPBOX_APP_KEY or not DROPBOX_APP_SECRET or not DROPBOX_REFRESH_TOKEN:
+    st.error("Missing Dropbox credentials. Set DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN.")
     st.stop()
-dbx = dropbox.Dropbox(DROPBOX_TOKEN)
+
+from dropbox import DropboxOAuth2FlowNoRedirect, Dropbox
+
+dbx = Dropbox(
+    oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
+    app_key=DROPBOX_APP_KEY,
+    app_secret=DROPBOX_APP_SECRET
+)
 
 # -----------------------------
 # HELPERS
