@@ -128,14 +128,11 @@ def find_market(stat, player_rows):
     return None
 
 def get_total_touchdowns_line_and_prob(player_rows):
-    """Pull Total Touchdowns line and probability from 'Any Touchdowns No' and invert probability."""
+    """Pull Total Touchdowns line and probability from 'Any Touchdowns No' only."""
     td_row = find_market("Any Touchdowns No", player_rows)
     if td_row:
-        line_val = 0.5  # default projection
-        avg_prob = 1 - td_row["AvgProb"]  # invert probability
-        return line_val, avg_prob
-    return 0.5, 0.5  # fallback default
-
+        return td_row["Line"], td_row["AvgProb"]
+    return 0.5, 0.5  # default projection = 0.5, probability = 0.5
 
 # -----------------------------
 # STREAMLIT SETUP
