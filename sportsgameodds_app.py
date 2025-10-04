@@ -38,7 +38,6 @@ MARKET_MAP = {
     "Receptions": ["Receptions"],
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
     "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"],
-    "Total Touchdowns": ["Player Touchdowns", "Any Touchdowns", "Any TDs"]  # Exclude passing TDs for QBs
 }
 
 # -----------------------------
@@ -49,7 +48,7 @@ DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 
 if not DROPBOX_APP_KEY or not DROPBOX_APP_SECRET or not DROPBOX_REFRESH_TOKEN:
-    st.error("Missing Dropbox credentials. Set DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN.")
+    st.error("Missing Dropbox credentials.")
     st.stop()
 
 dbx = Dropbox(
@@ -74,12 +73,10 @@ def fetch_api(api_key):
         r = requests.get(BASE_URL, headers=headers, params=params)
         r.raise_for_status()
         data = r.json()
-        if not data.get("success", False):
-            return None
-        return data.get("data", [])
+        return data.get("data", []) if data.get("success", False) else []
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching odds: {e}")
-        return None
+        return []
 
 def american_to_prob(odds):
     try:
@@ -102,13 +99,10 @@ def load_cache(max_age_minutes=CACHE_MAX_AGE_MINUTES):
 def save_cache(data):
     payload = {"timestamp": datetime.now().isoformat(), "data": data}
     try:
-        dbx.files_upload(
-            json.dumps(payload, indent=2).encode("utf-8"),
-            CACHE_FILE,
-            mode=dropbox.files.WriteMode.overwrite
-        )
+        dbx.files_upload(json.dumps(payload, indent=2).encode("utf-8"),
+                         CACHE_FILE, mode=dropbox.files.WriteMode.overwrite)
     except Exception as e:
-        st.error(f"Failed to save cache to Dropbox: {e}")
+        st.error(f"Failed to save cache: {e}")
 
 def average_odds(odds_list):
     probs = [american_to_prob(o) for o in odds_list if o not in ["N/A", None, ""]]
@@ -118,15 +112,10 @@ def average_odds(odds_list):
 def normalize(s):
     return str(s).lower().replace(" ", "")
 
-def find_market(stat, player_rows, position=None):
+def find_market(stat, player_rows):
     aliases = [normalize(a) for a in MARKET_MAP.get(stat, [stat])]
     for r in player_rows:
-        market_norm = normalize(r["Market"])
-        # Exclude passing TDs from Total Touchdowns for QBs
-        if stat == "Total Touchdowns" and position == "QB":
-            if any("pass" in alias for alias in aliases):
-                continue
-        if any(alias in market_norm for alias in aliases):
+        if any(alias in normalize(r["Market"]) for alias in aliases):
             return r
     return None
 
@@ -146,26 +135,18 @@ odds_data = []
 if use_cache:
     odds_data = load_cache()
     if not odds_data:
-        st.warning("No cached data found, please fetch from API.")
+        st.warning("No cached data found.")
         st.stop()
 else:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Fetch Primary API"):
             odds_data = fetch_api(API_KEY_PRIMARY)
-            if odds_data:
-                save_cache(odds_data)
-            else:
-                st.warning("Primary API failed or rate-limited.")
-                st.stop()
+            if odds_data: save_cache(odds_data)
     with col2:
         if st.button("Fetch Secondary API"):
             odds_data = fetch_api(API_KEY_SECONDARY)
-            if odds_data:
-                save_cache(odds_data)
-            else:
-                st.warning("Secondary API failed or rate-limited.")
-                st.stop()
+            if odds_data: save_cache(odds_data)
     if not odds_data:
         st.info("Click a fetch button to load player prop data.")
         st.stop()
@@ -179,7 +160,6 @@ for event in odds_data:
     odds_list = list(odds_list_raw.values()) if isinstance(odds_list_raw, dict) else odds_list_raw
     players_list = event.get("players") or []
 
-    # Build player map
     player_map = {}
     for p in players_list:
         if isinstance(p, dict):
@@ -193,11 +173,8 @@ for event in odds_data:
             player_map[p] = {"name": clean_player_name(p), "position": ""}
 
     for odds_item in odds_list:
-        if not isinstance(odds_item, dict):
-            continue
         pid = odds_item.get("playerID") or odds_item.get("statEntityID")
-        if not pid:
-            continue
+        if not pid: continue
         player_info = player_map.get(pid, {"name": clean_player_name(pid), "position": ""})
 
         line = (odds_item.get("bookOverUnder") or odds_item.get("fairOverUnder") or
@@ -220,7 +197,6 @@ for event in odds_data:
 
         rows.append({
             "Player": player_info["name"],
-            "Position": player_info["position"],
             "Market": market_name,
             "Line": float(line) if line not in ["", None] else 0.0,
             "AvgProb": average_odds(all_odds),
@@ -229,6 +205,7 @@ for event in odds_data:
             "Caesars": odds_by_book.get("caesars", {}).get("odds", "N/A"),
             "ESPNBet": odds_by_book.get("espnbet", {}).get("odds", "N/A"),
             "BetMGM": odds_by_book.get("betmgm", {}).get("odds", "N/A"),
+            "Position": player_info["position"],
         })
 
 if not rows:
@@ -244,12 +221,8 @@ selected_player = st.sidebar.selectbox("Select a player", players)
 
 st.sidebar.subheader("Scoring Settings")
 for stat in STATS:
-    st.sidebar.number_input(
-        stat + " (pts/unit)",
-        value=float(DEFAULT_SCORING[stat]),
-        step=0.01,
-        key=f"scoring__{stat}"
-    )
+    st.sidebar.number_input(stat + " (pts/unit)", value=float(DEFAULT_SCORING[stat]),
+                            step=0.01, key=f"scoring__{stat}")
 
 # -----------------------------
 # DISPLAY TABLES
@@ -274,21 +247,24 @@ projected_probs = {}
 pos = player_rows[0].get("Position", "") if player_rows else ""
 
 for stat in STATS:
-    matching_row = find_market(stat, player_rows, position=pos)
-    line_val = matching_row["Line"] if matching_row else 0.0
-    avg_prob = matching_row["AvgProb"] if matching_row else 0.5
+    if stat != "Total Touchdowns":
+        matching_row = find_market(stat, player_rows)
+        line_val = matching_row["Line"] if matching_row else 0.0
+        avg_prob = matching_row["AvgProb"] if matching_row else 0.5
+    else:
+        # Total TDs = Rush TDs + Receiving TDs
+        td_rows = []
+        for td_stat in ["Rush TDs", "Receiving TDs"]:
+            r = find_market(td_stat, player_rows)
+            if r: td_rows.append(r)
+        line_val = sum(r["Line"] for r in td_rows) if td_rows else 0.0
+        avg_prob = (sum(r["AvgProb"] for r in td_rows)/len(td_rows)) if td_rows else 0.5
 
     projected_stats[stat] = proj_cols[0].number_input(
-        f"Projected {stat}",
-        value=float(line_val),
-        step=0.1,
-        key=f"proj_stat__{stat}"
+        f"Projected {stat}", value=float(line_val), step=0.1, key=f"proj_stat__{stat}"
     )
     projected_probs[stat] = proj_cols[1].number_input(
-        f"Probability for {stat}",
-        value=float(avg_prob),
-        step=0.01,
-        key=f"proj_prob__{stat}"
+        f"Probability for {stat}", value=float(avg_prob), step=0.01, key=f"proj_prob__{stat}"
     )
 
 # -----------------------------
@@ -307,11 +283,7 @@ st.json(weighted_points)
 # SAVE / REMOVE PROJECTIONS
 # -----------------------------
 if st.button("Save Projection"):
-    st.session_state.projections.append({
-        "Player": selected_player,
-        **projected_stats,
-        "Total Points": total_points
-    })
+    st.session_state.projections.append({"Player": selected_player, **projected_stats, "Total Points": total_points})
 
 if st.button("Clear Projection for Player"):
     st.session_state.projections = [p for p in st.session_state.projections if p["Player"] != selected_player]
@@ -324,8 +296,6 @@ if st.session_state.projections:
 # REFRESH DATA
 # -----------------------------
 if st.button("Refresh Data"):
-    try:
-        dbx.files_delete_v2(CACHE_FILE)
-    except:
-        pass
+    try: dbx.files_delete_v2(CACHE_FILE)
+    except: pass
     st.experimental_rerun()
