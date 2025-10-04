@@ -60,7 +60,7 @@ DEFAULT_SCORING = {
     "Rush TDs": 6,
     "Receptions": 1,
     "Receiving Yards": 0.1,
-    "Receiving TDs": 6
+    "Receiving TDs": 6,
     "Total Touchdowns": 6
 }
 
