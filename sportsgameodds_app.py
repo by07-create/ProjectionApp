@@ -67,12 +67,12 @@ STATS = list(DEFAULT_SCORING.keys())
 
 MARKET_MAP = {
     "Pass Yards": ["Passing Yards", "Pass Yds"],
-    "Pass TDs": ["Passing TDs", "Pass Touchdowns"],
+    "Pass TDs": ["Passing TDs", "Pass Touchdowns", "Passing Touchdowns"],
     "Rush Yards": ["Rushing Yards", "Rush Yds"],
     "Rush TDs": ["Rushing TDs", "Rush Touchdowns"],
     "Receptions": ["Receptions"],
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
-    "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"]
+    "Receiving TDs": ["Receiving TDs", "Rec Touchdowns", "Any TDs", "Any Touchdowns"]
 }
 
 # -----------------------------
