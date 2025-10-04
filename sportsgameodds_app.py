@@ -4,7 +4,7 @@ import pandas as pd
 import json
 import os
 from datetime import datetime
-from dropbox import Dropbox
+from dropbox import Dropbox, files
 
 # -----------------------------
 # CONFIG
@@ -13,7 +13,7 @@ API_KEY_PRIMARY = "4ab2006b05f90755906bd881ecfaee3a"
 API_KEY_SECONDARY = "f5b3fb275ce1c78baa3bed7fab495f71"
 BASE_URL = "https://api.sportsgameodds.com/v2/events"
 LEAGUE_ID = "NFL"
-LIMIT = 50  # increase to catch more markets per fetch
+LIMIT = 20
 CACHE_FILE = "/odds_cache.json"
 CACHE_MAX_AGE_MINUTES = 30
 
@@ -38,7 +38,7 @@ MARKET_MAP = {
     "Receptions": ["Receptions"],
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
     "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"],
-    "Total Touchdowns": ["Player Touchdowns", "Any Touchdowns", "Any TDs"]  # computed dynamically
+    "Total Touchdowns": ["Player Touchdowns", "Any Touchdowns", "Any TDs"]
 }
 
 # -----------------------------
@@ -63,9 +63,7 @@ dbx = Dropbox(
 # -----------------------------
 def clean_player_name(pid):
     parts = pid.split("_")
-    if len(parts) >= 2:
-        return " ".join(parts[:-2]).title()
-    return pid
+    return " ".join(parts[:-2]).title() if len(parts) >= 2 else pid
 
 def fetch_api(api_key):
     headers = {"x-api-key": api_key}
@@ -105,7 +103,7 @@ def save_cache(data):
         dbx.files_upload(
             json.dumps(payload, indent=2).encode("utf-8"),
             CACHE_FILE,
-            mode=dropbox.files.WriteMode.overwrite
+            mode=files.WriteMode.overwrite
         )
     except Exception as e:
         st.error(f"Failed to save cache to Dropbox: {e}")
@@ -118,17 +116,33 @@ def average_odds(odds_list):
 def normalize(s):
     return str(s).lower().replace(" ", "")
 
-def find_market(stat, player_rows, position=None):
+def find_market(stat, player_rows):
     aliases = [normalize(a) for a in MARKET_MAP.get(stat, [stat])]
     for r in player_rows:
         market_norm = normalize(r["Market"])
-        # Exclude passing TDs from Total Touchdowns for QBs
-        if stat == "Total Touchdowns" and position == "QB":
-            if "pass" in market_norm:
-                continue
         if any(alias in market_norm for alias in aliases):
             return r
     return None
+
+def get_total_touchdowns(player_rows, position):
+    """Calculate Total Touchdowns: QB = Rush + Rec, others = all TDs"""
+    if not player_rows:
+        return 0.0, 0.5
+    if position == "QB":
+        rush = find_market("Rush TDs", player_rows)
+        rec = find_market("Receiving TDs", player_rows)
+        line = sum([r["Line"] for r in [rush, rec] if r])
+        prob_vals = [r["AvgProb"] for r in [rush, rec] if r]
+        avg_prob = sum(prob_vals)/len(prob_vals) if prob_vals else 0.5
+    else:
+        td = find_market("Total Touchdowns", player_rows)
+        if td:
+            line = td["Line"]
+            avg_prob = td["AvgProb"]
+        else:
+            line = 0.0
+            avg_prob = 0.5
+    return line, avg_prob
 
 # -----------------------------
 # STREAMLIT SETUP
@@ -179,7 +193,6 @@ for event in odds_data:
     odds_list = list(odds_list_raw.values()) if isinstance(odds_list_raw, dict) else odds_list_raw
     players_list = event.get("players") or []
 
-    # Build player map
     player_map = {}
     for p in players_list:
         if isinstance(p, dict):
@@ -266,7 +279,7 @@ st.subheader(f"Prop Odds for {selected_player}")
 st.dataframe(df_odds_display)
 
 # -----------------------------
-# FANTASY PROJECTION INPUTS (WITH FIXED TOTAL TOUCHDOWNS)
+# FANTASY PROJECTION INPUTS
 # -----------------------------
 proj_cols = st.columns(2)
 projected_stats = {}
@@ -274,27 +287,24 @@ projected_probs = {}
 pos = player_rows[0].get("Position", "") if player_rows else ""
 
 for stat in STATS:
-    if stat != "Total Touchdowns":
-        matching_row = find_market(stat, player_rows)
-        line_val = matching_row["Line"] if matching_row else 0.0
-        avg_prob = matching_row["AvgProb"] if matching_row else 0.5
+    if stat == "Total Touchdowns":
+        line_val, avg_prob = get_total_touchdowns(player_rows, pos)
     else:
-        # Total TDs = sum of all TD markets except passing TDs for QBs
-        td_rows = []
-        for r in player_rows:
-            market_lower = r["Market"].lower()
-            if "td" in market_lower:
-                if "pass" in market_lower and "qb" in pos.lower():
-                    continue
-                td_rows.append(r)
-        line_val = sum(r["Line"] for r in td_rows) if td_rows else 0.0
-        avg_prob = (sum(r["AvgProb"] for r in td_rows)/len(td_rows)) if td_rows else 0.5
+        row = find_market(stat, player_rows)
+        line_val = row["Line"] if row else 0.0
+        avg_prob = row["AvgProb"] if row else 0.5
 
     projected_stats[stat] = proj_cols[0].number_input(
-        f"Projected {stat}", value=float(line_val), step=0.1, key=f"proj_stat__{stat}"
+        f"Projected {stat}",
+        value=float(line_val),
+        step=0.1,
+        key=f"proj_stat__{stat}"
     )
     projected_probs[stat] = proj_cols[1].number_input(
-        f"Probability for {stat}", value=float(avg_prob), step=0.01, key=f"proj_prob__{stat}"
+        f"Probability for {stat}",
+        value=float(avg_prob),
+        step=0.01,
+        key=f"proj_prob__{stat}"
     )
 
 # -----------------------------
