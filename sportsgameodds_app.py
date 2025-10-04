@@ -15,7 +15,7 @@ BASE_URL = "https://api.sportsgameodds.com/v2/events"
 LEAGUE_ID = "NFL"
 LIMIT = 20
 CACHE_FILE = "/odds_cache.json"
-CACHE_MAX_AGE_MINUTES = 30
+CACHE_MAX_AGE_MINUTES = 10080  # 7 days
 
 DEFAULT_SCORING = {
     "Pass Yards": 0.04,
@@ -38,7 +38,7 @@ MARKET_MAP = {
     "Receptions": ["Receptions"],
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
     "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"],
-    "Total Touchdowns": ["Player Touchdowns", "Any Touchdowns", "Any TDs"]
+    "Total Touchdowns": ["Player Touchdowns", "Any Touchdowns", "Any TDs", "Pass TDs", "Rush TDs", "Receiving TDs"]
 }
 
 # -----------------------------
@@ -121,31 +121,32 @@ def find_market(stat, player_rows):
     for r in player_rows:
         market_norm = normalize(r["Market"])
         for alias in aliases:
-            # remove numbers to match markets like "Player Touchdowns 0.5"
-            m_clean = ''.join([c for c in market_norm if not c.isdigit()])
-            a_clean = ''.join([c for c in normalize(alias) if not c.isdigit()])
+            # remove numbers, symbols, extra spaces
+            m_clean = ''.join([c for c in market_norm if c.isalpha()])
+            a_clean = ''.join([c for c in normalize(alias) if c.isalpha()])
             if a_clean in m_clean:
                 return r
     return None
 
 def get_total_touchdowns(player_rows, position):
-    """Calculate Total Touchdowns: QB = Rush + Rec, others = all TDs"""
+    """Calculate Total Touchdowns: QB = Rush + Rec, others = Pass + Rush + Rec"""
     if not player_rows:
         return 0.0, 0.5
+
+    td_rows = []
     if position == "QB":
-        rush = find_market("Rush TDs", player_rows)
-        rec = find_market("Receiving TDs", player_rows)
-        line = sum([r["Line"] for r in [rush, rec] if r])
-        prob_vals = [r["AvgProb"] for r in [rush, rec] if r]
-        avg_prob = sum(prob_vals)/len(prob_vals) if prob_vals else 0.5
+        for stat in ["Rush TDs", "Receiving TDs"]:
+            r = find_market(stat, player_rows)
+            if r:
+                td_rows.append(r)
     else:
-        td = find_market("Total Touchdowns", player_rows)
-        if td:
-            line = td["Line"]
-            avg_prob = td["AvgProb"]
-        else:
-            line = 0.0
-            avg_prob = 0.5
+        for stat in ["Pass TDs", "Rush TDs", "Receiving TDs"]:
+            r = find_market(stat, player_rows)
+            if r:
+                td_rows.append(r)
+
+    line = sum([r["Line"] for r in td_rows]) if td_rows else 0.0
+    avg_prob = sum([r["AvgProb"] for r in td_rows])/len(td_rows) if td_rows else 0.5
     return line, avg_prob
 
 # -----------------------------
@@ -335,10 +336,6 @@ if st.button("Save Projection"):
 
 if st.button("Clear Projection for Player"):
     st.session_state.projections = [p for p in st.session_state.projections if p["Player"] != selected_player]
-
-if st.session_state.projections:
-    st.subheader("Saved Player Projections")
-    st.dataframe(pd.DataFrame(st.session_state.projections))
 
 # -----------------------------
 # TOP 100 LEADERBOARD
