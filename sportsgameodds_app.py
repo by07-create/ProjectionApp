@@ -61,6 +61,7 @@ DEFAULT_SCORING = {
     "Receptions": 1,
     "Receiving Yards": 0.1,
     "Receiving TDs": 6
+    "Total Touchdowns": 6
 }
 
 STATS = list(DEFAULT_SCORING.keys())
@@ -72,7 +73,8 @@ MARKET_MAP = {
     "Rush TDs": ["Rushing TDs", "Rush Touchdowns"],
     "Receptions": ["Receptions"],
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
-    "Receiving TDs": ["Receiving TDs", "Rec Touchdowns", "Any TDs", "Any Touchdowns"]
+    "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"]
+    "Total Touchdowns": ["Any Touchdowns", "Any TDs", "Total TDs"]
 }
 
 # -----------------------------
