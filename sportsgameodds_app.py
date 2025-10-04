@@ -38,7 +38,7 @@ MARKET_MAP = {
     "Receptions": ["Receptions"],
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
     "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"],
-    "Total Touchdowns": ["Any Touchdowns", "Any TDs", "Player Touchdowns"]
+    "Total Touchdowns": ["Player Touchdowns", "Any Touchdowns", "Any TDs"]  # Exclude passing TDs for QBs
 }
 
 # -----------------------------
@@ -118,10 +118,14 @@ def average_odds(odds_list):
 def normalize(s):
     return str(s).lower().replace(" ", "")
 
-def find_market(stat, player_rows):
+def find_market(stat, player_rows, position=None):
     aliases = [normalize(a) for a in MARKET_MAP.get(stat, [stat])]
     for r in player_rows:
         market_norm = normalize(r["Market"])
+        # Exclude passing TDs from Total Touchdowns for QBs
+        if stat == "Total Touchdowns" and position == "QB":
+            if any("pass" in alias for alias in aliases):
+                continue
         if any(alias in market_norm for alias in aliases):
             return r
     return None
@@ -267,26 +271,12 @@ st.dataframe(df_odds_display)
 proj_cols = st.columns(2)
 projected_stats = {}
 projected_probs = {}
+pos = player_rows[0].get("Position", "") if player_rows else ""
+
 for stat in STATS:
-    matching_row = find_market(stat, player_rows)
+    matching_row = find_market(stat, player_rows, position=pos)
     line_val = matching_row["Line"] if matching_row else 0.0
     avg_prob = matching_row["AvgProb"] if matching_row else 0.5
-
-    # Fix Total Touchdowns: exclude passing TDs for QBs
-    if stat == "Total Touchdowns" and player_rows:
-        pos = player_rows[0].get("Position", "")
-        td_row = matching_row
-        if "QB" in pos and td_row:
-            # Only include rushing + receiving TDs
-            rush_td_row = find_market("Rush TDs", player_rows)
-            rec_td_row = find_market("Receiving TDs", player_rows)
-            line_val = 0
-            avg_prob = 0
-            for row in [rush_td_row, rec_td_row]:
-                if row:
-                    line_val += row["Line"]
-                    avg_prob += row["AvgProb"]
-            avg_prob = avg_prob/2 if avg_prob > 0 else 0.5
 
     projected_stats[stat] = proj_cols[0].number_input(
         f"Projected {stat}",
