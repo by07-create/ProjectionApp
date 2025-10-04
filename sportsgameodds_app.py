@@ -13,7 +13,7 @@ API_KEY_PRIMARY = "4ab2006b05f90755906bd881ecfaee3a"
 API_KEY_SECONDARY = "f5b3fb275ce1c78baa3bed7fab495f71"
 BASE_URL = "https://api.sportsgameodds.com/v2/events"
 LEAGUE_ID = "NFL"
-LIMIT = 20
+LIMIT = 50
 CACHE_FILE = "/odds_cache.json"
 CACHE_MAX_AGE_MINUTES = 30
 
@@ -125,7 +125,7 @@ def find_market(stat, player_rows):
     return None
 
 def get_total_touchdowns(player_rows, position):
-    """Calculate Total Touchdowns sum: QB = Rush + Rec, others = all TDs"""
+    """Calculate Total Touchdowns: QB = Rush + Rec, others = all TDs"""
     if not player_rows:
         return 0.0, 0.5
     if position == "QB":
@@ -335,6 +335,15 @@ if st.button("Clear Projection for Player"):
 if st.session_state.projections:
     st.subheader("Saved Player Projections")
     st.dataframe(pd.DataFrame(st.session_state.projections))
+
+# -----------------------------
+# TOP 100 PROJECTED PLAYERS
+# -----------------------------
+if st.session_state.projections:
+    df_proj = pd.DataFrame(st.session_state.projections)
+    df_top100 = df_proj.sort_values("Total Points", ascending=False).head(100)
+    st.subheader("Top 100 Projected Players")
+    st.dataframe(df_top100)
 
 # -----------------------------
 # REFRESH DATA
