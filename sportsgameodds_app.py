@@ -121,33 +121,11 @@ def find_market(stat, player_rows):
     for r in player_rows:
         market_norm = normalize(r["Market"])
         for alias in aliases:
-            # remove numbers, symbols, extra spaces
             m_clean = ''.join([c for c in market_norm if c.isalpha()])
             a_clean = ''.join([c for c in normalize(alias) if c.isalpha()])
             if a_clean in m_clean:
                 return r
     return None
-
-def get_total_touchdowns(player_rows, position):
-    """Calculate Total Touchdowns: QB = Rush + Rec, others = Pass + Rush + Rec"""
-    if not player_rows:
-        return 0.0, 0.5
-
-    td_rows = []
-    if position == "QB":
-        for stat in ["Rush TDs", "Receiving TDs"]:
-            r = find_market(stat, player_rows)
-            if r:
-                td_rows.append(r)
-    else:
-        for stat in ["Pass TDs", "Rush TDs", "Receiving TDs"]:
-            r = find_market(stat, player_rows)
-            if r:
-                td_rows.append(r)
-
-    line = sum([r["Line"] for r in td_rows]) if td_rows else 0.0
-    avg_prob = sum([r["AvgProb"] for r in td_rows])/len(td_rows) if td_rows else 0.5
-    return line, avg_prob
 
 # -----------------------------
 # STREAMLIT SETUP
@@ -293,7 +271,8 @@ pos = player_rows[0].get("Position", "") if player_rows else ""
 
 for stat in STATS:
     if stat == "Total Touchdowns":
-        line_val, avg_prob = get_total_touchdowns(player_rows, pos)
+        line_val = 0.5
+        avg_prob = 0.5
     else:
         row = find_market(stat, player_rows)
         line_val = row["Line"] if row else 0.0
@@ -330,6 +309,7 @@ st.json(weighted_points)
 if st.button("Save Projection"):
     st.session_state.projections.append({
         "Player": selected_player,
+        "Position": pos,
         **projected_stats,
         "Total Points": total_points
     })
@@ -338,13 +318,22 @@ if st.button("Clear Projection for Player"):
     st.session_state.projections = [p for p in st.session_state.projections if p["Player"] != selected_player]
 
 # -----------------------------
-# TOP 100 LEADERBOARD
+# TOP 150 LEADERBOARD (with filtering)
 # -----------------------------
 if st.session_state.projections:
     df_proj = pd.DataFrame(st.session_state.projections)
-    df_top100 = df_proj.sort_values("Total Points", ascending=False).head(100)
-    st.subheader("Top 100 Projected Fantasy Players")
-    st.dataframe(df_top100)
+    df_top150 = df_proj.sort_values("Total Points", ascending=False).head(150)
+
+    cols_order = ["Player", "Position", "Total Points"] + [c for c in df_top150.columns if c not in ["Player", "Position", "Total Points"]]
+    df_top150 = df_top150[cols_order]
+
+    st.subheader("Top 150 Projected Fantasy Players")
+    positions = ["All"] + sorted(df_top150["Position"].dropna().unique())
+    selected_pos = st.selectbox("Filter by Position", positions)
+    if selected_pos != "All":
+        df_top150 = df_top150[df_top150["Position"] == selected_pos]
+
+    st.dataframe(df_top150.reset_index(drop=True))
 
 # -----------------------------
 # REFRESH DATA
