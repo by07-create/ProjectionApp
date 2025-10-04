@@ -73,7 +73,7 @@ MARKET_MAP = {
     "Rush TDs": ["Rushing TDs", "Rush Touchdowns"],
     "Receptions": ["Receptions"],
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
-    "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"]
+    "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"],
     "Total Touchdowns": ["Any Touchdowns", "Any TDs", "Total TDs"]
 }
 
