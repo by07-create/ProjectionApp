@@ -4,7 +4,7 @@ import pandas as pd
 import json
 import os
 from datetime import datetime
-import dropbox
+from dropbox import Dropbox
 
 # -----------------------------
 # CONFIG
@@ -14,44 +14,8 @@ API_KEY_SECONDARY = "f5b3fb275ce1c78baa3bed7fab495f71"
 BASE_URL = "https://api.sportsgameodds.com/v2/events"
 LEAGUE_ID = "NFL"
 LIMIT = 20
-CACHE_FILE = "/odds_cache.json"  # Path in Dropbox
+CACHE_FILE = "/odds_cache.json"
 CACHE_MAX_AGE_MINUTES = 30
-
-TEAM_NAMES = {
-    "ARIZONA_CARDINALS_NFL": "Arizona Cardinals",
-    "ATLANTA_FALCONS_NFL": "Atlanta Falcons",
-    "BALTIMORE_RAVENS_NFL": "Baltimore Ravens",
-    "BUFFALO_BILLS_NFL": "Buffalo Bills",
-    "CAROLINA_PANTHERS_NFL": "Carolina Panthers",
-    "CHICAGO_BEARS_NFL": "Chicago Bears",
-    "CINCINNATI_BENGALS_NFL": "Cincinnati Bengals",
-    "CLEVELAND_BROWNS_NFL": "Cleveland Browns",
-    "DALLAS_COWBOYS_NFL": "Dallas Cowboys",
-    "DENVER_BRONCOS_NFL": "Denver Broncos",
-    "DETROIT_LIONS_NFL": "Detroit Lions",
-    "GREEN_BAY_PACKERS_NFL": "Green Bay Packers",
-    "HOUSTON_TEXANS_NFL": "Houston Texans",
-    "INDIANAPOLIS_COLTS_NFL": "Indianapolis Colts",
-    "JACKSONVILLE_JAGUARS_NFL": "Jacksonville Jaguars",
-    "KANSAS_CITY_CHIEFS_NFL": "Kansas City Chiefs",
-    "LAS_VEGAS_RAIDERS_NFL": "Las Vegas Raiders",
-    "LOS_ANGELES_CHARGERS_NFL": "Los Angeles Chargers",
-    "LOS_ANGELES_RAMS_NFL": "Los Angeles Rams",
-    "MIAMI_DOLPHINS_NFL": "Miami Dolphins",
-    "MINNESOTA_VIKINGS_NFL": "Minnesota Vikings",
-    "NEW_ENGLAND_PATRIOTS_NFL": "New England Patriots",
-    "NEW_ORLEANS_SAINTS_NFL": "New Orleans Saints",
-    "NEW_YORK_GIANTS_NFL": "New York Giants",
-    "NEW_YORK_JETS_NFL": "New York Jets",
-    "PHILADELPHIA_EAGLES_NFL": "Philadelphia Eagles",
-    "PITTSBURGH_STEELERS_NFL": "Pittsburgh Steelers",
-    "SAN_FRANCISCO_49ERS_NFL": "San Francisco 49ers",
-    "SEATTLE_SEAHAWKS_NFL": "Seattle Seahawks",
-    "TAMPA_BAY_BUCCANEERS_NFL": "Tampa Bay Buccaneers",
-    "TENNESSEE_TITANS_NFL": "Tennessee Titans",
-    "WASHINGTON_COMMANDERS_NFL": "Washington Commanders"
-}
-
 
 DEFAULT_SCORING = {
     "Pass Yards": 0.04,
@@ -78,7 +42,7 @@ MARKET_MAP = {
 }
 
 # -----------------------------
-# DROPBOX CLIENT (Refresh Token Flow)
+# DROPBOX CLIENT
 # -----------------------------
 DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
@@ -87,8 +51,6 @@ DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 if not DROPBOX_APP_KEY or not DROPBOX_APP_SECRET or not DROPBOX_REFRESH_TOKEN:
     st.error("Missing Dropbox credentials. Set DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN.")
     st.stop()
-
-from dropbox import DropboxOAuth2FlowNoRedirect, Dropbox
 
 dbx = Dropbox(
     oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
@@ -122,10 +84,7 @@ def fetch_api(api_key):
 def american_to_prob(odds):
     try:
         odds = int(odds)
-        if odds > 0:
-            return 100 / (odds + 100)
-        else:
-            return -odds / (-odds + 100)
+        return 100 / (odds + 100) if odds > 0 else -odds / (-odds + 100)
     except:
         return None
 
@@ -136,11 +95,7 @@ def load_cache(max_age_minutes=CACHE_MAX_AGE_MINUTES):
         ts = pd.to_datetime(payload.get("timestamp"))
         if (pd.Timestamp.now() - ts).total_seconds() < max_age_minutes * 60:
             return payload.get("data", [])
-    except dropbox.exceptions.ApiError:
-        # File does not exist yet
-        return []
-    except Exception as e:
-        st.warning(f"Error loading cache: {e}")
+    except:
         return []
     return []
 
@@ -152,7 +107,7 @@ def save_cache(data):
             CACHE_FILE,
             mode=dropbox.files.WriteMode.overwrite
         )
-    except dropbox.exceptions.ApiError as e:
+    except Exception as e:
         st.error(f"Failed to save cache to Dropbox: {e}")
 
 def average_odds(odds_list):
@@ -175,12 +130,11 @@ def find_market(stat, player_rows):
 # STREAMLIT SETUP
 # -----------------------------
 st.title("NFL Player Prop Odds & Fantasy Projection")
-
 if "projections" not in st.session_state:
     st.session_state.projections = []
 
 # -----------------------------
-# Fetch / Cache Data
+# FETCH / CACHE DATA
 # -----------------------------
 use_cache = st.sidebar.checkbox("Load cached data instead of fetching API")
 odds_data = []
@@ -213,23 +167,13 @@ else:
         st.stop()
 
 # -----------------------------
-# Extract Player Props with dynamic team mapping
+# EXTRACT PLAYER PROPS
 # -----------------------------
 rows = []
 for event in odds_data:
-    match_name = event.get("name", "Unknown Match")
     odds_list_raw = event.get("odds") or []
     odds_list = list(odds_list_raw.values()) if isinstance(odds_list_raw, dict) else odds_list_raw
     players_list = event.get("players") or []
-
-    # Build dynamic team mapping from API data
-    dynamic_team_names = {}
-    for p in players_list:
-        if isinstance(p, dict):
-            team_id = p.get("teamID")
-            team_name = p.get("teamName")
-            if team_id and team_name:
-                dynamic_team_names[team_id] = team_name
 
     # Build player map
     player_map = {}
@@ -237,14 +181,12 @@ for event in odds_data:
         if isinstance(p, dict):
             pid = p.get("playerID") or p.get("statEntityID")
             if pid:
-                team_id = p.get("teamID") or "Unknown Team"
-                team_name = dynamic_team_names.get(team_id, team_id)
                 first = p.get("firstName")
                 last = p.get("lastName")
                 full_name = f"{first} {last}" if first and last else clean_player_name(pid)
-                player_map[pid] = {"name": full_name, "team": team_name}
+                player_map[pid] = {"name": full_name, "position": p.get("position", "")}
         elif isinstance(p, str):
-            player_map[p] = {"name": clean_player_name(p), "team": "Unknown Team"}
+            player_map[p] = {"name": clean_player_name(p), "position": ""}
 
     for odds_item in odds_list:
         if not isinstance(odds_item, dict):
@@ -252,7 +194,7 @@ for event in odds_data:
         pid = odds_item.get("playerID") or odds_item.get("statEntityID")
         if not pid:
             continue
-        player_info = player_map.get(pid, {"name": clean_player_name(pid), "team": "Unknown Team"})
+        player_info = player_map.get(pid, {"name": clean_player_name(pid), "position": ""})
 
         line = (odds_item.get("bookOverUnder") or odds_item.get("fairOverUnder") or
                 odds_item.get("openBookOverUnder") or odds_item.get("openFairOverUnder") or "")
@@ -273,10 +215,9 @@ for event in odds_data:
         ]
 
         rows.append({
-            "Match": match_name,
-            "Team": player_info["team"],
-            "Market": market_name,
             "Player": player_info["name"],
+            "Position": player_info["position"],
+            "Market": market_name,
             "Line": float(line) if line not in ["", None] else 0.0,
             "AvgProb": average_odds(all_odds),
             "DraftKings": odds_by_book.get("draftkings", {}).get("odds", "N/A"),
@@ -287,11 +228,11 @@ for event in odds_data:
         })
 
 if not rows:
-    st.warning("No player prop odds found in the current events.")
+    st.warning("No player prop odds found.")
     st.stop()
 
 # -----------------------------
-# Sidebar Controls
+# SIDEBAR CONTROLS
 # -----------------------------
 st.sidebar.title("Controls")
 players = sorted(set(r["Player"] for r in rows))
@@ -307,19 +248,21 @@ for stat in STATS:
     )
 
 # -----------------------------
-# Display Tables
+# DISPLAY TABLES
 # -----------------------------
 df_all = pd.DataFrame(rows).sort_values(["Player", "Market"])
+df_display = df_all.drop(columns=["Position"], errors="ignore")
 st.subheader("All Player Props")
-st.dataframe(df_all)
+st.dataframe(df_display)
 
 player_rows = [r for r in rows if r["Player"] == selected_player]
 df_odds = pd.DataFrame(player_rows).sort_values("Market")
+df_odds_display = df_odds.drop(columns=["Position"], errors="ignore")
 st.subheader(f"Prop Odds for {selected_player}")
-st.dataframe(df_odds)
+st.dataframe(df_odds_display)
 
 # -----------------------------
-# Fantasy Projection Inputs
+# FANTASY PROJECTION INPUTS
 # -----------------------------
 proj_cols = st.columns(2)
 projected_stats = {}
@@ -328,6 +271,22 @@ for stat in STATS:
     matching_row = find_market(stat, player_rows)
     line_val = matching_row["Line"] if matching_row else 0.0
     avg_prob = matching_row["AvgProb"] if matching_row else 0.5
+
+    # Fix Total Touchdowns: exclude passing TDs for QBs
+    if stat == "Total Touchdowns" and player_rows:
+        pos = player_rows[0].get("Position", "")
+        td_row = matching_row
+        if "QB" in pos and td_row:
+            # Only include rushing + receiving TDs
+            rush_td_row = find_market("Rush TDs", player_rows)
+            rec_td_row = find_market("Receiving TDs", player_rows)
+            line_val = 0
+            avg_prob = 0
+            for row in [rush_td_row, rec_td_row]:
+                if row:
+                    line_val += row["Line"]
+                    avg_prob += row["AvgProb"]
+            avg_prob = avg_prob/2 if avg_prob > 0 else 0.5
 
     projected_stats[stat] = proj_cols[0].number_input(
         f"Projected {stat}",
@@ -343,7 +302,7 @@ for stat in STATS:
     )
 
 # -----------------------------
-# Calculate Projected Fantasy Points
+# CALCULATE PROJECTED FANTASY POINTS
 # -----------------------------
 weighted_points = {}
 for stat in STATS:
@@ -355,7 +314,7 @@ st.subheader(f"Projected Fantasy Points: {total_points:.2f}")
 st.json(weighted_points)
 
 # -----------------------------
-# Save / Remove Projections
+# SAVE / REMOVE PROJECTIONS
 # -----------------------------
 if st.button("Save Projection"):
     st.session_state.projections.append({
@@ -372,11 +331,11 @@ if st.session_state.projections:
     st.dataframe(pd.DataFrame(st.session_state.projections))
 
 # -----------------------------
-# Refresh Data
+# REFRESH DATA
 # -----------------------------
 if st.button("Refresh Data"):
     try:
         dbx.files_delete_v2(CACHE_FILE)
-    except dropbox.exceptions.ApiError:
+    except:
         pass
     st.experimental_rerun()
