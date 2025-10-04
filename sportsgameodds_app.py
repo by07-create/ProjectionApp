@@ -251,15 +251,13 @@ for stat in STATS:
 # DISPLAY TABLES
 # -----------------------------
 df_all = pd.DataFrame(rows).sort_values(["Player", "Market"])
-df_display = df_all.drop(columns=["Position"], errors="ignore")
 st.subheader("All Player Props")
-st.dataframe(df_display)
+st.dataframe(df_all.drop(columns=["Position"], errors="ignore"))
 
 player_rows = [r for r in rows if r["Player"] == selected_player]
 df_odds = pd.DataFrame(player_rows).sort_values("Market")
-df_odds_display = df_odds.drop(columns=["Position"], errors="ignore")
 st.subheader(f"Prop Odds for {selected_player}")
-st.dataframe(df_odds_display)
+st.dataframe(df_odds.drop(columns=["Position"], errors="ignore"))
 
 # -----------------------------
 # FANTASY PROJECTION INPUTS
@@ -270,13 +268,12 @@ projected_probs = {}
 pos = player_rows[0].get("Position", "") if player_rows else ""
 
 for stat in STATS:
+    # Total Touchdowns default prob 0.5
+    row = find_market(stat, player_rows)
+    line_val = row["Line"] if row else 0.0
+    avg_prob = row["AvgProb"] if row else 0.5
     if stat == "Total Touchdowns":
-        line_val = 0.5
         avg_prob = 0.5
-    else:
-        row = find_market(stat, player_rows)
-        line_val = row["Line"] if row else 0.0
-        avg_prob = row["AvgProb"] if row else 0.5
 
     projected_stats[stat] = proj_cols[0].number_input(
         f"Projected {stat}",
@@ -318,22 +315,37 @@ if st.button("Clear Projection for Player"):
     st.session_state.projections = [p for p in st.session_state.projections if p["Player"] != selected_player]
 
 # -----------------------------
-# TOP 150 LEADERBOARD (with filtering)
+# MANUAL PROJECTIONS TOP 150
 # -----------------------------
 if st.session_state.projections:
     df_proj = pd.DataFrame(st.session_state.projections)
-    df_top150 = df_proj.sort_values("Total Points", ascending=False).head(150)
+    df_top150_manual = df_proj.sort_values("Total Points", ascending=False).head(150).reset_index(drop=True)
+    st.subheader("Top 150 Saved Projections")
+    pos_filter = st.multiselect("Filter by Position", options=df_top150_manual["Position"].unique(), default=df_top150_manual["Position"].unique())
+    st.dataframe(df_top150_manual[df_top150_manual["Position"].isin(pos_filter)][["Player", "Position", "Total Points"] + [s for s in STATS if s in df_top150_manual.columns]])
 
-    cols_order = ["Player", "Position", "Total Points"] + [c for c in df_top150.columns if c not in ["Player", "Position", "Total Points"]]
-    df_top150 = df_top150[cols_order]
+# -----------------------------
+# AUTO-PROJECTIONS TOP 150
+# -----------------------------
+# automatically compute projected points for all players
+auto_players = []
+for player_name, group in df_all.groupby("Player"):
+    pos = group.iloc[0]["Position"]
+    weighted_points_auto = 0
+    for stat in STATS:
+        row = find_market(stat, group.to_dict("records"))
+        line_val = row["Line"] if row else 0.0
+        avg_prob = row["AvgProb"] if row else 0.5
+        if stat == "Total Touchdowns":
+            avg_prob = 0.5
+        points_per_unit = st.session_state[f"scoring__{stat}"]
+        weighted_points_auto += line_val * points_per_unit * avg_prob
+    auto_players.append({"Player": player_name, "Position": pos, "Total Points": weighted_points_auto})
 
-    st.subheader("Top 150 Projected Fantasy Players")
-    positions = ["All"] + sorted(df_top150["Position"].dropna().unique())
-    selected_pos = st.selectbox("Filter by Position", positions)
-    if selected_pos != "All":
-        df_top150 = df_top150[df_top150["Position"] == selected_pos]
-
-    st.dataframe(df_top150.reset_index(drop=True))
+df_auto_top150 = pd.DataFrame(auto_players).sort_values("Total Points", ascending=False).head(150).reset_index(drop=True)
+st.subheader("Top 150 Auto Projections (All Players)")
+pos_filter_auto = st.multiselect("Filter Auto Table by Position", options=df_auto_top150["Position"].unique(), default=df_auto_top150["Position"].unique(), key="auto_pos_filter")
+st.dataframe(df_auto_top150[df_auto_top150["Position"].isin(pos_filter_auto)][["Player", "Position", "Total Points"]])
 
 # -----------------------------
 # REFRESH DATA
