@@ -121,6 +121,7 @@ def find_market(stat, player_rows):
     for r in player_rows:
         market_norm = normalize(r["Market"])
         for alias in aliases:
+            # remove letters only to match
             m_clean = ''.join([c for c in market_norm if c.isalpha()])
             a_clean = ''.join([c for c in normalize(alias) if c.isalpha()])
             if a_clean in m_clean:
@@ -133,10 +134,6 @@ def find_market(stat, player_rows):
 st.title("NFL Player Prop Odds & Fantasy Projection")
 if "projections" not in st.session_state:
     st.session_state.projections = []
-
-for stat in STATS:
-    if f"scoring__{stat}" not in st.session_state:
-        st.session_state[f"scoring__{stat}"] = DEFAULT_SCORING[stat]
 
 # -----------------------------
 # FETCH / CACHE DATA
@@ -224,6 +221,11 @@ for event in odds_data:
             "Market": market_name,
             "Line": float(line) if line not in ["", None] else 0.0,
             "AvgProb": average_odds(all_odds),
+            "DraftKings": odds_by_book.get("draftkings", {}).get("odds", "N/A"),
+            "FanDuel": odds_by_book.get("fanduel", {}).get("odds", "N/A"),
+            "Caesars": odds_by_book.get("caesars", {}).get("odds", "N/A"),
+            "ESPNBet": odds_by_book.get("espnbet", {}).get("odds", "N/A"),
+            "BetMGM": odds_by_book.get("betmgm", {}).get("odds", "N/A"),
         })
 
 if not rows:
@@ -241,25 +243,24 @@ st.sidebar.subheader("Scoring Settings")
 for stat in STATS:
     st.sidebar.number_input(
         stat + " (pts/unit)",
-        value=float(st.session_state[f"scoring__{stat}"]),
+        value=float(DEFAULT_SCORING[stat]),
         step=0.01,
         key=f"scoring__{stat}"
     )
 
 # -----------------------------
-# PLAYER-SPECIFIC PROJECTIONS
+# FANTASY PROJECTION INPUTS
 # -----------------------------
 player_rows = [r for r in rows if r["Player"] == selected_player]
-
 proj_cols = st.columns(2)
 projected_stats = {}
 projected_probs = {}
 pos = player_rows[0].get("Position", "") if player_rows else ""
 
 for stat in STATS:
+    # Default Total Touchdowns projection = 0.5
     if stat == "Total Touchdowns":
-        line_val = 0.5
-        avg_prob = 0.5
+        line_val, avg_prob = 0.5, 0.5
     else:
         row = find_market(stat, player_rows)
         line_val = row["Line"] if row else 0.0
@@ -278,6 +279,9 @@ for stat in STATS:
         key=f"proj_prob__{stat}"
     )
 
+# -----------------------------
+# CALCULATE PROJECTED FANTASY POINTS
+# -----------------------------
 weighted_points = {}
 for stat in STATS:
     points_per_unit = st.session_state[f"scoring__{stat}"]
@@ -285,6 +289,7 @@ for stat in STATS:
 
 total_points = sum(weighted_points.values())
 st.subheader(f"Projected Fantasy Points: {total_points:.2f}")
+st.json(weighted_points)
 
 # -----------------------------
 # SAVE / REMOVE PROJECTIONS
@@ -301,48 +306,53 @@ if st.button("Clear Projection for Player"):
     st.session_state.projections = [p for p in st.session_state.projections if p["Player"] != selected_player]
 
 # -----------------------------
-# TOP 150 AUTO-PROJECTION TABLE
+# TOP 150 AUTO-PROJECTION
 # -----------------------------
-if rows:
-    auto_players = {}
-    for r in rows:
-        pname = r["Player"]
-        if pname not in auto_players:
-            auto_players[pname] = {"Position": r.get("Position",""), **{s:0.0 for s in STATS}, "Total Points": 0.0}
+# Compute projections for all players
+auto_players = {}
+for r in rows:
+    pname = r["Player"]
+    if pname not in auto_players:
+        auto_players[pname] = {"Player": pname, "Position": r.get("Position","")}
+        for stat in STATS:
+            auto_players[pname][stat] = 0.0
+            auto_players[pname]["Total Points"] = 0.0
+    # assign each stat if it exists
+    for stat in STATS:
+        if stat == "Total Touchdowns":
+            val = 0.5
+            prob = 0.5
+        else:
+            row_stat = find_market(stat, [r])
+            val = row_stat["Line"] if row_stat else 0.0
+            prob = row_stat["AvgProb"] if row_stat else 0.5
+        pts = st.session_state.get(f"scoring__{stat}", DEFAULT_SCORING[stat]) * val * prob
+        auto_players[pname][stat] = val
+        auto_players[pname]["Total Points"] += pts
 
-        stat_name = None
-        for s in STATS:
-            if s != "Total Touchdowns" and normalize(s) in normalize(r["Market"]):
-                stat_name = s
-                break
-        if stat_name:
-            auto_players[pname][stat_name] = r.get("Line", 0.0) * r.get("AvgProb", 0.5)
+df_auto_top150 = pd.DataFrame(auto_players.values())
+# Ensure all columns exist
+for s in STATS:
+    if s not in df_auto_top150.columns:
+        df_auto_top150[s] = 0.0
 
-    for p in auto_players.values():
-        # add Total Touchdowns default
-        p["Total Touchdowns"] = 0.5
-        total_pts = sum(p[s] * st.session_state[f"scoring__{s}"] for s in STATS)
-        p["Total Points"] = total_pts
+df_auto_top150 = df_auto_top150.sort_values("Total Points", ascending=False).head(150).reset_index(drop=True)
 
-    df_auto_top150 = pd.DataFrame(auto_players).T.reset_index(drop=True)
-    df_auto_top150 = df_auto_top150.sort_values("Total Points", ascending=False).head(150)
+# -----------------------------
+# FILTER & DISPLAY TOP 150
+# -----------------------------
+st.subheader("Top 150 Projected Fantasy Players")
+positions = ["All"] + sorted(df_auto_top150["Position"].dropna().unique().tolist())
+pos_filter = st.selectbox("Filter by Position", positions)
 
-    st.subheader("Top 150 Projected Fantasy Players")
+df_display_top150 = df_auto_top150.copy()
+if pos_filter != "All":
+    df_display_top150 = df_display_top150[df_display_top150["Position"] == pos_filter]
 
-    # Position filter
-    pos_filter_auto = st.multiselect(
-        "Filter by Position",
-        options=df_auto_top150["Position"].unique(),
-        default=df_auto_top150["Position"].unique(),
-        key="auto_pos_filter"
-    )
-    df_auto_top150_filtered = df_auto_top150[df_auto_top150["Position"].isin(pos_filter_auto)]
+cols_order = ["Player", "Position", "Total Points"] + [s for s in STATS]
+df_display_top150 = df_display_top150[cols_order]
 
-    # Reorder columns: Name, Position, Points first
-    cols_order = ["Player", "Position", "Total Points"] + [s for s in STATS]
-    df_auto_top150_filtered = df_auto_top150_filtered[cols_order]
-
-    st.dataframe(df_auto_top150_filtered.reset_index(drop=True))
+st.dataframe(df_display_top150)
 
 # -----------------------------
 # REFRESH DATA
