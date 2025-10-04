@@ -125,7 +125,7 @@ def find_market(stat, player_rows):
     return None
 
 def get_total_touchdowns(player_rows, position):
-    """Calculate Total Touchdowns: QB = Rush + Rec, others = all TDs"""
+    """Calculate Total Touchdowns sum: QB = Rush + Rec, others = all TDs"""
     if not player_rows:
         return 0.0, 0.5
     if position == "QB":
