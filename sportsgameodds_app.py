@@ -13,7 +13,7 @@ API_KEY_PRIMARY = "4ab2006b05f90755906bd881ecfaee3a"
 API_KEY_SECONDARY = "f5b3fb275ce1c78baa3bed7fab495f71"
 BASE_URL = "https://api.sportsgameodds.com/v2/events"
 LEAGUE_ID = "NFL"
-LIMIT = 50
+LIMIT = 50  # Fetch more for top 100 leaderboard
 CACHE_FILE = "/odds_cache.json"
 CACHE_MAX_AGE_MINUTES = 30
 
@@ -49,7 +49,7 @@ DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 
 if not DROPBOX_APP_KEY or not DROPBOX_APP_SECRET or not DROPBOX_REFRESH_TOKEN:
-    st.error("Missing Dropbox credentials. Set DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN.")
+    st.error("Missing Dropbox credentials.")
     st.stop()
 
 dbx = Dropbox(
@@ -72,12 +72,10 @@ def fetch_api(api_key):
         r = requests.get(BASE_URL, headers=headers, params=params)
         r.raise_for_status()
         data = r.json()
-        if not data.get("success", False):
-            return None
-        return data.get("data", [])
+        return data.get("data", []) if data.get("success", False) else []
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching odds: {e}")
-        return None
+        return []
 
 def american_to_prob(odds):
     try:
@@ -125,7 +123,7 @@ def find_market(stat, player_rows):
     return None
 
 def get_total_touchdowns(player_rows, position):
-    """Calculate Total Touchdowns: QB = Rush + Rec, others = all TDs"""
+    """Calculate Total Touchdowns: QB = Rush + Rec, others = Total TD market"""
     if not player_rows:
         return 0.0, 0.5
     if position == "QB":
@@ -136,12 +134,8 @@ def get_total_touchdowns(player_rows, position):
         avg_prob = sum(prob_vals)/len(prob_vals) if prob_vals else 0.5
     else:
         td = find_market("Total Touchdowns", player_rows)
-        if td:
-            line = td["Line"]
-            avg_prob = td["AvgProb"]
-        else:
-            line = 0.0
-            avg_prob = 0.5
+        line = td["Line"] if td else 0.0
+        avg_prob = td["AvgProb"] if td else 0.5
     return line, avg_prob
 
 # -----------------------------
@@ -159,9 +153,6 @@ odds_data = []
 
 if use_cache:
     odds_data = load_cache()
-    if not odds_data:
-        st.warning("No cached data found, please fetch from API.")
-        st.stop()
 else:
     col1, col2 = st.columns(2)
     with col1:
@@ -169,17 +160,11 @@ else:
             odds_data = fetch_api(API_KEY_PRIMARY)
             if odds_data:
                 save_cache(odds_data)
-            else:
-                st.warning("Primary API failed or rate-limited.")
-                st.stop()
     with col2:
         if st.button("Fetch Secondary API"):
             odds_data = fetch_api(API_KEY_SECONDARY)
             if odds_data:
                 save_cache(odds_data)
-            else:
-                st.warning("Secondary API failed or rate-limited.")
-                st.stop()
     if not odds_data:
         st.info("Click a fetch button to load player prop data.")
         st.stop()
@@ -332,18 +317,33 @@ if st.button("Save Projection"):
 if st.button("Clear Projection for Player"):
     st.session_state.projections = [p for p in st.session_state.projections if p["Player"] != selected_player]
 
-if st.session_state.projections:
-    st.subheader("Saved Player Projections")
-    st.dataframe(pd.DataFrame(st.session_state.projections))
-
 # -----------------------------
 # TOP 100 PROJECTED PLAYERS
 # -----------------------------
-if st.session_state.projections:
-    df_proj = pd.DataFrame(st.session_state.projections)
-    df_top100 = df_proj.sort_values("Total Points", ascending=False).head(100)
-    st.subheader("Top 100 Projected Players")
-    st.dataframe(df_top100)
+all_player_points = []
+player_names = sorted(set(r["Player"] for r in rows))
+for name in player_names:
+    p_rows = [r for r in rows if r["Player"] == name]
+    pos = p_rows[0].get("Position", "") if p_rows else ""
+    player_proj = {}
+    total = 0.0
+    for stat in STATS:
+        if stat == "Total Touchdowns":
+            line_val, avg_prob = get_total_touchdowns(p_rows, pos)
+        else:
+            row = find_market(stat, p_rows)
+            line_val = row["Line"] if row else 0.0
+            avg_prob = row["AvgProb"] if row else 0.5
+        points_per_unit = st.session_state[f"scoring__{stat}"]
+        total += line_val * points_per_unit * avg_prob
+        player_proj[stat] = line_val
+    player_proj["Total Points"] = total
+    player_proj["Player"] = name
+    all_player_points.append(player_proj)
+
+df_top = pd.DataFrame(all_player_points).sort_values("Total Points", ascending=False).head(100)
+st.subheader("Top 100 Projected Players")
+st.dataframe(df_top)
 
 # -----------------------------
 # REFRESH DATA
