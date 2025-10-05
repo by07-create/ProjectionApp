@@ -175,27 +175,6 @@ def get_total_touchdowns_line_and_prob_from_yes(player_rows):
     return (0.5, 0.5)
 
 # -----------------------------
-# NEW: Universal weighted average projection helper
-# -----------------------------
-def estimate_projection(player_rows, stat):
-    if stat == "Total Touchdowns":
-        _, prob_yes = get_total_touchdowns_line_and_prob_from_yes(player_rows)
-        return 0.5, prob_yes if prob_yes is not None else 0.5
-
-    row = find_market(stat, player_rows)
-    if not row:
-        return 0.0, 0.5
-
-    all_odds = []
-    for k in ["DraftKings","FanDuel","Caesars","ESPNBet","BetMGM"]:
-        v = row.get(k)
-        if v not in [None, "N/A", ""]:
-            all_odds.append(v)
-    avg_prob = average_odds(all_odds) if all_odds else row.get("AvgProb", 0.5)
-
-    return float(row.get("Line",0.0)), float(avg_prob)
-
-# -----------------------------
 # STREAMLIT SETUP
 # -----------------------------
 st.set_page_config(layout="wide")
@@ -262,7 +241,7 @@ if not odds_data:
     st.stop()
 
 # -----------------------------
-# EXTRACT PLAYER PROPS (rows)
+# EXTRACT PLAYER PROPS
 # -----------------------------
 rows = []
 for event in odds_data:
@@ -289,10 +268,12 @@ for event in odds_data:
         if not pid:
             continue
         player_info = player_map.get(pid, {"name": clean_player_name(pid), "position": ""})
+
         line = (odds_item.get("bookOverUnder") or odds_item.get("fairOverUnder")
                 or odds_item.get("openBookOverUnder") or odds_item.get("openFairOverUnder") or "")
         market_name = odds_item.get("marketName") or odds_item.get("market") or odds_item.get("statName") or "N/A"
         market_display = f"{market_name} {line}" if line else market_name
+
         odds_by_book = odds_item.get("byBookmaker") or {}
         all_odds = []
         def collect_od(v):
@@ -307,6 +288,7 @@ for event in odds_data:
                             all_odds.append(val)
             else:
                 all_odds.append(v)
+
         collect_od(odds_item.get('bookOdds','N/A'))
         collect_od(odds_item.get('fairOdds','N/A'))
         collect_od(odds_item.get('openBookOdds','N/A'))
@@ -316,7 +298,9 @@ for event in odds_data:
         collect_od(odds_by_book.get("caesars", {}).get("odds", "N/A"))
         collect_od(odds_by_book.get("espnbet", {}).get("odds", "N/A"))
         collect_od(odds_by_book.get("betmgm", {}).get("odds", "N/A"))
+
         avg_prob = average_odds(all_odds)
+
         try:
             market_raw = odds_item.get("marketKey") or odds_item.get("market") or json.dumps(odds_item)
         except Exception:
@@ -373,7 +357,14 @@ projected_stats = {}
 projected_probs = {}
 
 for stat in STATS:
-    line_val, avg_prob = estimate_projection(player_rows, stat)
+    if stat == "Total Touchdowns":
+        _, yes_prob = get_total_touchdowns_line_and_prob_from_yes(player_rows)
+        line_val = 0.5
+        avg_prob = yes_prob if (yes_prob is not None) else 0.5
+    else:
+        row = find_market(stat, player_rows)
+        line_val = row["Line"] if row else 0.0
+        avg_prob = row["AvgProb"] if row else 0.5
 
     projected_stats[stat] = proj_cols[0].number_input(
         f"Projected {stat}",
@@ -389,19 +380,20 @@ for stat in STATS:
     )
 
 # -----------------------------
-# CALCULATE PROJECTED FANTASY POINTS (for selected player)
+# CALCULATE PROJECTED FANTASY POINTS
 # -----------------------------
 weighted_points = {}
 for stat in STATS:
     pts_per_unit = st.session_state[f"scoring__{stat}"]
-    weighted_points[stat] = projected_stats[stat] * pts_per_unit * projected_probs[stat]
+    # Use expected value for all stats consistently
+    weighted_points[stat] = projected_stats[stat] * projected_probs[stat] * pts_per_unit
 
 total_points = sum(weighted_points.values())
 st.subheader(f"Projected Fantasy Points: {total_points:.2f}")
 st.json(weighted_points)
 
 # -----------------------------
-# SAVE / CLEAR PROJECTION (replace existing)
+# SAVE / CLEAR PROJECTION
 # -----------------------------
 if st.button("Save Projection"):
     st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
@@ -428,23 +420,74 @@ df_auto = []
 for p in players_all:
     p_rows = [r for r in rows if r["Player"] == p]
     saved = next((x for x in st.session_state.projections if x.get("Player") == p), None)
+
     record = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else "")}
 
     for stat in STATS:
         if saved:
             val = saved.get(stat, None)
             prob = saved.get(f"{stat}_prob", None)
-            if val is None or prob is None:
-                val, prob = estimate_projection(p_rows, stat)
+            if val is None:
+                if stat == "Total Touchdowns":
+                    _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
+                    val = 0.5
+                else:
+                    row = find_market(stat, p_rows)
+                    val = row["Line"] if row else 0.0
+                    prob = row["AvgProb"] if row else 0.5
         else:
-            val, prob = estimate_projection(p_rows, stat)
-        pts_per_unit = st.session_state.get(f"scoring__{stat}", DEFAULT_SCORING[stat])
-        record[stat] = val
-        record[f"{stat}_prob"] = prob
-        record[f"{stat}_pts"] = val * pts_per_unit * prob
-    record["TotalPoints"] = sum(record[f"{s}_pts"] for s in STATS)
+            if stat == "Total Touchdowns":
+                _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
+                val = 0.5
+            else:
+                row = find_market(stat, p_rows)
+                val = row["Line"] if row else 0.0
+                prob = row["AvgProb"] if row else 0.5
+
+        try:
+            record[stat] = float(val)
+        except:
+            record[stat] = 0.0
+        try:
+            record[f"{stat}_prob"] = float(prob)
+        except:
+            record[f"{stat}_prob"] = 0.5
+
+    # Calculate projected points consistently
+    total_pts = sum(record[stat] * record[f"{stat}_prob"] * st.session_state[f"scoring__{stat}"] for stat in STATS)
+    record["Projected Points"] = total_pts
+
     df_auto.append(record)
 
-df_leaderboard = pd.DataFrame(df_auto).sort_values("TotalPoints", ascending=False).head(150)
-st.subheader("Top 150 Projected Fantasy Points")
-st.dataframe(df_leaderboard)
+df_auto_top150 = pd.DataFrame(df_auto).sort_values("Projected Points", ascending=False).head(150).reset_index(drop=True)
+
+cols_order = [
+    "Player", "Projected Points",
+    "Pass Yards", "Pass TDs", "Rush Yards", "Rush TDs",
+    "Receptions", "Receiving Yards", "Receiving TDs", "Total Touchdowns"
+]
+for c in cols_order:
+    if c not in df_auto_top150.columns:
+        df_auto_top150[c] = 0.0
+
+df_display_top = df_auto_top150[cols_order].copy()
+
+st.subheader("Top 150 Projected Fantasy Players")
+positions_present = sorted(set(df_auto_top150["Position"].fillna("").unique()))
+positions_present = [p for p in positions_present if p]
+pos_sel = st.multiselect("Filter positions (Top 150)", options=["All"] + positions_present, default=["All"])
+if pos_sel and "All" not in pos_sel:
+    df_display_top = df_auto_top150[df_auto_top150["Position"].isin(pos_sel)][cols_order].reset_index(drop=True)
+
+st.dataframe(df_display_top)
+
+# -----------------------------
+# REFRESH DATA
+# -----------------------------
+if st.button("Refresh Data (clear cache)"):
+    try:
+        dbx.files_delete_v2(CACHE_FILE)
+        st.success("Cleared Dropbox cache.")
+    except Exception:
+        st.warning("Could not delete Dropbox cache (it may not exist).")
+    st.experimental_rerun()
