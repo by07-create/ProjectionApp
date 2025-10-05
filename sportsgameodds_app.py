@@ -174,21 +174,6 @@ def get_total_touchdowns_line_and_prob_from_yes(player_rows):
         return (td_row.get("Line", 0.5), td_row.get("AvgProb", 0.5))
     return (0.5, 0.5)
 
-def filter_receptions_once(rows):
-    """Keep only the first Receptions row per player to stop duplication."""
-    seen = {}
-    filtered = []
-    for r in rows:
-        player = r["Player"]
-        stat_aliases = MARKET_MAP.get("Receptions", ["Receptions"])
-        is_reception = any(normalize(a) in normalize(r["Market"]) for a in stat_aliases)
-        if is_reception:
-            if player in seen:
-                continue
-            seen[player] = True
-        filtered.append(r)
-    return filtered
-
 # -----------------------------
 # STREAMLIT SETUP
 # -----------------------------
@@ -218,7 +203,7 @@ def load_cache_from_dropbox():
 if use_cache:
     odds_data = load_cache_from_dropbox()
     if not odds_data:
-        st.warning("No cached data found in Dropbox (or cache expired).")
+        st.warning("No cached data found in Dropbox (or cache expired). Please fetch from API.")
 else:
     col1, col2 = st.columns(2)
     with col1:
@@ -232,8 +217,6 @@ else:
                     st.success("Saved cache to Dropbox.")
                 except Exception as e:
                     st.error(f"Failed to save cache to Dropbox: {e}")
-            else:
-                st.warning("Primary API failed.")
     with col2:
         if st.button("Fetch Secondary API"):
             data = fetch_api(API_KEY_SECONDARY)
@@ -245,8 +228,9 @@ else:
                     st.success("Saved cache to Dropbox.")
                 except Exception as e:
                     st.error(f"Failed to save cache to Dropbox: {e}")
-            else:
-                st.warning("Secondary API failed.")
+
+if not odds_data and use_cache:
+    pass
 
 if not odds_data:
     st.info("Use the sidebar buttons to fetch odds from API or uncheck 'Load cached data' and fetch.")
@@ -280,7 +264,6 @@ for event in odds_data:
         if not pid:
             continue
         player_info = player_map.get(pid, {"name": clean_player_name(pid), "position": ""})
-
         line = (odds_item.get("bookOverUnder") or odds_item.get("fairOverUnder")
                 or odds_item.get("openBookOverUnder") or odds_item.get("openFairOverUnder") or "")
         market_name = odds_item.get("marketName") or odds_item.get("market") or odds_item.get("statName") or "N/A"
@@ -289,14 +272,13 @@ for event in odds_data:
         odds_by_book = odds_item.get("byBookmaker") or {}
         all_odds = []
         def collect_od(v):
-            if v is None:
-                return
+            if v is None: return
             if isinstance(v, dict):
-                if "odds" in v and isinstance(v["odds"], (int, str)):
+                if "odds" in v and isinstance(v["odds"], (int,str)):
                     all_odds.append(v["odds"])
                 else:
                     for val in v.values():
-                        if isinstance(val, (int, str)):
+                        if isinstance(val,(int,str)):
                             all_odds.append(val)
             else:
                 all_odds.append(v)
@@ -312,9 +294,10 @@ for event in odds_data:
         collect_od(odds_by_book.get("betmgm", {}).get("odds", "N/A"))
 
         avg_prob = average_odds(all_odds)
+
         try:
             market_raw = odds_item.get("marketKey") or odds_item.get("market") or json.dumps(odds_item)
-        except Exception:
+        except:
             market_raw = str(odds_item)
 
         rows.append({
@@ -330,11 +313,6 @@ for event in odds_data:
             "ESPNBet": odds_by_book.get("espnbet", {}).get("odds", "N/A"),
             "BetMGM": odds_by_book.get("betmgm", {}).get("odds", "N/A"),
         })
-
-# -----------------------------
-# FILTER RECEPTIONS TO ONCE PER PLAYER
-# -----------------------------
-rows = filter_receptions_once(rows)
 
 if not rows:
     st.warning("No player prop odds found in the returned data.")
@@ -372,13 +350,20 @@ proj_cols = st.columns(2)
 projected_stats = {}
 projected_probs = {}
 
+# --- CACHE ONE ROW PER STAT TO FIX DUPLICATION ---
+player_stat_row_map = {}
 for stat in STATS:
     if stat == "Total Touchdowns":
-        _, yes_prob = get_total_touchdowns_line_and_prob_from_yes(player_rows)
-        line_val = 0.5
-        avg_prob = yes_prob if (yes_prob is not None) else 0.5
+        player_stat_row_map[stat] = get_total_touchdowns_line_and_prob_from_yes(player_rows)
     else:
-        row = find_market(stat, player_rows)
+        player_stat_row_map[stat] = find_market(stat, player_rows)
+
+for stat in STATS:
+    row = player_stat_row_map[stat]
+    if stat == "Total Touchdowns":
+        line_val = row[0] if row else 0.5
+        avg_prob = row[1] if row else 0.5
+    else:
         line_val = row["Line"] if row else 0.0
         avg_prob = row["AvgProb"] if row else 0.5
 
@@ -438,6 +423,8 @@ for p in players_all:
 
     record = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else "")}
 
+    # --- CACHE ONE ROW PER STAT TO FIX DUPLICATION ---
+    stat_row_map = {}
     for stat in STATS:
         if saved:
             val = saved.get(stat, None)
@@ -447,64 +434,24 @@ for p in players_all:
                     _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
                     val = 0.5
                 else:
-                    row = find_market(stat, p_rows)
-                    val = row["Line"] if row else 0.0
-                    prob = row["AvgProb"] if row else 0.5
+                    stat_row_map[stat] = find_market(stat, p_rows)
+                    val = stat_row_map[stat]["Line"] if stat_row_map[stat] else 0.0
+                    prob = stat_row_map[stat]["AvgProb"] if stat_row_map[stat] else 0.5
         else:
             if stat == "Total Touchdowns":
-                _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
-                val = 0.5
+                val, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
             else:
-                row = find_market(stat, p_rows)
-                val = row["Line"] if row else 0.0
-                prob = row["AvgProb"] if row else 0.5
+                stat_row_map[stat] = find_market(stat, p_rows)
+                val = stat_row_map[stat]["Line"] if stat_row_map[stat] else 0.0
+                prob = stat_row_map[stat]["AvgProb"] if stat_row_map[stat] else 0.5
 
-        try:
-            record[stat] = float(val)
-        except:
-            record[stat] = 0.0
-        try:
-            record[f"{stat}_prob"] = float(prob)
-        except:
-            record[f"{stat}_prob"] = 0.5
+        weighted = val * st.session_state[f"scoring__{stat}"] * prob
+        record[stat] = weighted
 
-    total_pts = 0.0
-    for stat in STATS:
-        pts_per = st.session_state[f"scoring__{stat}"]
-        total_pts += record[stat] * pts_per * record[f"{stat}_prob"]
-    record["Projected Points"] = total_pts
-
+    record["Total Points"] = sum(record[s] for s in STATS)
     df_auto.append(record)
 
-df_auto_top150 = pd.DataFrame(df_auto).sort_values("Projected Points", ascending=False).head(150).reset_index(drop=True)
+df_leaderboard = pd.DataFrame(df_auto).sort_values("Total Points", ascending=False).head(150)
+st.subheader("Top 150 Projected Points")
+st.dataframe(df_leaderboard)
 
-cols_order = [
-    "Player", "Projected Points",
-    "Pass Yards", "Pass TDs", "Rush Yards", "Rush TDs",
-    "Receptions", "Receiving Yards", "Receiving TDs", "Total Touchdowns"
-]
-for c in cols_order:
-    if c not in df_auto_top150.columns:
-        df_auto_top150[c] = 0.0
-
-df_display_top = df_auto_top150[cols_order].copy()
-
-st.subheader("Top 150 Projected Fantasy Players")
-positions_present = sorted(set(df_auto_top150["Position"].fillna("").unique()))
-positions_present = [p for p in positions_present if p]
-pos_sel = st.multiselect("Filter positions (Top 150)", options=["All"] + positions_present, default=["All"])
-if pos_sel and "All" not in pos_sel:
-    df_display_top = df_auto_top150[df_auto_top150["Position"].isin(pos_sel)][cols_order].reset_index(drop=True)
-
-st.dataframe(df_display_top)
-
-# -----------------------------
-# REFRESH DATA
-# -----------------------------
-if st.button("Refresh Data (clear cache)"):
-    try:
-        dbx.files_delete_v2(CACHE_FILE)
-        st.success("Cleared Dropbox cache.")
-    except Exception:
-        st.warning("Could not delete Dropbox cache (it may not exist).")
-    st.experimental_rerun()
