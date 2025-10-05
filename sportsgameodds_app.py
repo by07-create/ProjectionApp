@@ -35,7 +35,7 @@ MARKET_MAP = {
     "Pass TDs": ["Passing TDs", "Pass Touchdowns", "Passing Touchdowns"],
     "Rush Yards": ["Rushing Yards", "Rush Yds"],
     "Rush TDs": ["Rushing TDs", "Rush Touchdowns"],
-    "Receptions": ["Receptions"],
+    "Receptions": ["Receptions"],  # Won't be used, see find_market fix
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
     "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"],
     "Total Touchdowns": ["Player Touchdowns", "Any Touchdowns", "Any TDs", "Touchdowns"]
@@ -119,6 +119,13 @@ def skip_home_away_all(market_raw):
     return False
 
 def find_market(stat, player_rows):
+    # --- FIX: For Receptions, pull exact receiving_receptions row ---
+    if stat == "Receptions":
+        for r in player_rows:
+            if r.get("statID") == "receiving_receptions":
+                return r
+        return None
+
     aliases = MARKET_MAP.get(stat, [stat])
     for r in player_rows:
         m = r.get("Market","")
@@ -312,6 +319,7 @@ for event in odds_data:
             "Caesars": odds_by_book.get("caesars", {}).get("odds", "N/A"),
             "ESPNBet": odds_by_book.get("espnbet", {}).get("odds", "N/A"),
             "BetMGM": odds_by_book.get("betmgm", {}).get("odds", "N/A"),
+            "statID": odds_item.get("statID")  # NEW: track statID for Receptions fix
         })
 
 if not rows:
@@ -339,7 +347,7 @@ for stat in STATS:
 # -----------------------------
 player_rows = [r for r in rows if r["Player"] == selected_player]
 df_odds = pd.DataFrame(player_rows).sort_values("Market")
-df_odds_display = df_odds.drop(columns=["Position","MarketRaw"], errors="ignore")
+df_odds_display = df_odds.drop(columns=["Position","MarketRaw","statID"], errors="ignore")
 st.subheader(f"Prop Odds for {selected_player}")
 st.dataframe(df_odds_display)
 
@@ -426,32 +434,26 @@ for p in players_all:
     # --- CACHE ONE ROW PER STAT TO FIX DUPLICATION ---
     stat_row_map = {}
     for stat in STATS:
-        if saved:
-            val = saved.get(stat, None)
-            prob = saved.get(f"{stat}_prob", None)
-            if val is None:
-                if stat == "Total Touchdowns":
-                    _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
-                    val = 0.5
-                else:
-                    stat_row_map[stat] = find_market(stat, p_rows)
-                    val = stat_row_map[stat]["Line"] if stat_row_map[stat] else 0.0
-                    prob = stat_row_map[stat]["AvgProb"] if stat_row_map[stat] else 0.5
+        if stat == "Total Touchdowns":
+            stat_row_map[stat] = get_total_touchdowns_line_and_prob_from_yes(p_rows)
         else:
-            if stat == "Total Touchdowns":
-                val, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
-            else:
-                stat_row_map[stat] = find_market(stat, p_rows)
-                val = stat_row_map[stat]["Line"] if stat_row_map[stat] else 0.0
-                prob = stat_row_map[stat]["AvgProb"] if stat_row_map[stat] else 0.5
+            stat_row_map[stat] = find_market(stat, p_rows)
 
-        weighted = val * st.session_state[f"scoring__{stat}"] * prob
-        record[stat] = weighted
+    for stat in STATS:
+        row = stat_row_map[stat]
+        if stat == "Total Touchdowns":
+            line_val = row[0] if row else 0.5
+            prob_val = row[1] if row else 0.5
+        else:
+            line_val = row["Line"] if row else 0.0
+            prob_val = row["AvgProb"] if row else 0.5
+        record[f"{stat}_line"] = line_val
+        record[f"{stat}_prob"] = prob_val
+        record[f"{stat}_proj_pts"] = line_val * st.session_state[f"scoring__{stat}"] * prob_val
 
-    record["Total Points"] = sum(record[s] for s in STATS)
+    record["TotalProjPts"] = sum(record[f"{s}_proj_pts"] for s in STATS)
     df_auto.append(record)
 
-df_leaderboard = pd.DataFrame(df_auto).sort_values("Total Points", ascending=False).head(150)
-st.subheader("Top 150 Projected Points")
+df_leaderboard = pd.DataFrame(df_auto).sort_values("TotalProjPts", ascending=False).head(150)
+st.subheader("Top 150 Projected Fantasy Leaders")
 st.dataframe(df_leaderboard)
-
