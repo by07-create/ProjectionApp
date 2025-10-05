@@ -350,7 +350,6 @@ proj_cols = st.columns(2)
 projected_stats = {}
 projected_probs = {}
 
-# --- CACHE ONE ROW PER STAT TO FIX DUPLICATION ---
 player_stat_row_map = {}
 for stat in STATS:
     if stat == "Total Touchdowns":
@@ -423,7 +422,6 @@ for p in players_all:
 
     record = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else "")}
 
-    # --- CACHE ONE ROW PER STAT TO FIX DUPLICATION ---
     stat_row_map = {}
     for stat in STATS:
         if saved:
@@ -450,11 +448,12 @@ for p in players_all:
             record[stat] = val
             record[f"{stat}_prob"] = prob
 
-    record["Total Points"] = sum(
-        record[stat] * st.session_state[f"scoring__{stat}"] * record[f"{stat}_prob"] for stat in STATS
-    )
+    total_pts = sum(record[stat] * st.session_state[f"scoring__{stat}"] * record[f"{stat}_prob"] for stat in STATS)
+    record["Total Points"] = total_pts
     df_auto.append(record)
 
-df_auto = pd.DataFrame(df_auto).sort_values("Total Points", ascending=False).head(150)
+df_auto = pd.DataFrame(df_auto)
+cols = ["Player", "Total Points", "Position"] + [s for s in STATS] + [f"{s}_prob" for s in STATS]
+df_auto = df_auto[cols].sort_values("Total Points", ascending=False).head(150)
 st.subheader("Top 150 Projected Fantasy Leaders")
 st.dataframe(df_auto)
