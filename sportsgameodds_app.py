@@ -13,7 +13,7 @@ API_KEY_PRIMARY = "4ab2006b05f90755906bd881ecfaee3a"
 API_KEY_SECONDARY = "f5b3fb275ce1c78baa3bed7fab495f71"
 BASE_URL = "https://api.sportsgameodds.com/v2/events"
 LEAGUE_ID = "NFL"
-LIMIT = 20
+LIMIT = 200  # increase in case you want more players
 CACHE_FILE = "/odds_cache.json"
 CACHE_MAX_AGE_MINUTES = 10080  # 7 days
 
@@ -27,7 +27,6 @@ DEFAULT_SCORING = {
     "Receiving TDs": 6,
     "Total Touchdowns": 6
 }
-
 STATS = list(DEFAULT_SCORING.keys())
 
 MARKET_MAP = {
@@ -38,9 +37,16 @@ MARKET_MAP = {
     "Receptions": ["Receptions"],
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
     "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"],
-    # usual aliases; we also explicitly search for Y/N YES for total TDs
+    # numeric total TD aliases (YN yes/no markets handled specially)
     "Total Touchdowns": ["Player Touchdowns", "Any Touchdowns", "Any TDs", "Touchdowns"]
 }
+
+# Patterns to skip (alt/partials/home/away/etc)
+SKIP_PATTERNS = [
+    "alt", "alternate", "1h", "2h", "first half", "second half", "half",
+    "quarter", "q1", "q2", "q3", "q4", "home", "away", "team", "team total", "home team",
+    "away team", "odds to", "ou", "open", "alternate"
+]
 
 # -----------------------------
 # DROPBOX CLIENT
@@ -70,7 +76,7 @@ def fetch_api(api_key):
     headers = {"x-api-key": api_key}
     params = {"leagueID": LEAGUE_ID, "oddsAvailable": "true", "limit": LIMIT}
     try:
-        r = requests.get(BASE_URL, headers=headers, params=params, timeout=15)
+        r = requests.get(BASE_URL, headers=headers, params=params, timeout=20)
         r.raise_for_status()
         data = r.json()
         if not data.get("success", False):
@@ -119,42 +125,60 @@ def average_odds(odds_list):
             probs.append(p)
     return sum(probs)/len(probs) if probs else 0.5
 
-def normalize(s):
-    return str(s).lower().replace(" ", "")
+def normalize(s: str):
+    return (s or "").lower().strip()
+
+def contains_skip_pattern(text: str):
+    t = normalize(text)
+    for p in SKIP_PATTERNS:
+        if p in t:
+            return True
+    return False
 
 def market_text_matches(aliases, market_text, market_raw):
     m_clean = ''.join([c for c in normalize(market_text) if c.isalpha()])
     raw_clean = ''.join([c for c in normalize(market_raw) if c.isalpha()])
     for a in aliases:
         a_clean = ''.join([c for c in normalize(a) if c.isalpha()])
-        if a_clean in m_clean or a_clean in raw_clean:
+        if a_clean and (a_clean in m_clean or a_clean in raw_clean):
             return True
     return False
 
 def find_market(stat, player_rows):
+    """Find a single, game-level matching market for stat (skip partials/alt/home/away)."""
     aliases = MARKET_MAP.get(stat, [stat])
-    # first pass: precise textual match
+    # first pass: precise textual match excluding skipped markets
     for r in player_rows:
-        if market_text_matches(aliases, r.get("Market",""), r.get("MarketRaw","")):
+        market = r.get("Market","") or ""
+        raw = r.get("MarketRaw","") or ""
+        if contains_skip_pattern(market) or contains_skip_pattern(raw):
+            continue
+        if market_text_matches(aliases, market, raw):
             return r
-    # fallback: substring match
+    # fallback: looser match but still exclude skip patterns
     for r in player_rows:
-        m = normalize(r.get("Market",""))
+        market = r.get("Market","") or ""
+        raw = r.get("MarketRaw","") or ""
+        if contains_skip_pattern(market) or contains_skip_pattern(raw):
+            continue
+        m = normalize(market)
         for a in aliases:
             if normalize(a) in m:
                 return r
     return None
 
 def find_total_td_yes_row(player_rows):
+    """Find the Y/N 'Yes' market for player total touchdowns if present (player-specific)."""
     if not player_rows:
         return None
     for r in player_rows:
         raw = (r.get("MarketRaw") or "").lower()
         market = (r.get("Market") or "").lower()
-        # API keys include patterns like 'touchdowns-<id>-game-yn-yes'
-        if ("yn-yes" in raw or "yn_yes" in raw or "yn-yes" in market or "yn_yes" in market) and ("touchdown" in raw or "touchdown" in market or "touchdowns" in raw or "touchdowns" in market):
-            return r
-        # textual matches
+        # look for the API pattern that includes 'yn-yes' or 'yn_yes' or 'yn-yes' text
+        if ("yn-yes" in raw or "yn_yes" in raw or "yn-yes" in market or "yn_yes" in market or (" yn " in raw and " yes" in raw)):
+            if "touchdown" in raw or "touchdowns" in raw or "touchdown" in market or "touchdowns" in market:
+                return r
+        # textual matches like "anytime touchdowns yes"
         if "anytime" in raw and "yes" in raw and "touchdown" in raw:
             return r
         if "anytime" in market and "yes" in market and "touchdown" in market:
@@ -164,6 +188,10 @@ def find_total_td_yes_row(player_rows):
     return None
 
 def get_total_touchdowns_line_and_prob_from_yes(player_rows):
+    """
+    Return (line_val, prob_yes) for Total Touchdowns using the YES Y/N market when available.
+    Projection value defaults to 0.5 (we keep that behavior) but probability uses the yes-market.
+    """
     yes_row = find_total_td_yes_row(player_rows)
     if yes_row:
         prob_yes = yes_row.get("AvgProb", None)
@@ -174,11 +202,14 @@ def get_total_touchdowns_line_and_prob_from_yes(player_rows):
                 if val not in [None, "N/A", ""]:
                     od_list.append(val)
             prob_yes = average_odds(od_list) if od_list else 0.5
+        # numeric line if present; for Y/N often not meaningful — still capture if present
         line_val = yes_row.get("Line", 0.5)
         try:
-            return float(line_val) if line_val not in [None, ""] else 0.5, float(prob_yes)
+            line_val = float(line_val) if line_val not in [None, ""] else 0.5
         except:
-            return 0.5, float(prob_yes)
+            line_val = 0.5
+        return line_val, float(prob_yes)
+    # fallback to numeric Player Touchdowns market
     td_row = find_market("Total Touchdowns", player_rows)
     if td_row:
         return td_row.get("Line", 0.5), td_row.get("AvgProb", 0.5)
@@ -187,45 +218,54 @@ def get_total_touchdowns_line_and_prob_from_yes(player_rows):
 # -----------------------------
 # STREAMLIT SETUP
 # -----------------------------
+st.set_page_config(layout="wide")
 st.title("NFL Player Prop Odds & Fantasy Projection")
+
+# initialize saved projections storage (list of dicts), one per player
 if "projections" not in st.session_state:
-    st.session_state.projections = []
+    st.session_state.projections = []  # each entry: dict with stat, stat_prob, Position, Player, Total Points
 
 # -----------------------------
-# FETCH / CACHE DATA
+# FETCH / CACHE DATA (from Dropbox or API)
 # -----------------------------
-use_cache = st.sidebar.checkbox("Load cached data instead of fetching API")
+use_cache = st.sidebar.checkbox("Load cached data instead of fetching API", value=True)
 odds_data = []
-
 if use_cache:
     odds_data = load_cache()
     if not odds_data:
-        st.warning("No cached data found, please fetch from API.")
-        st.stop()
+        st.sidebar.info("No cached data found — fetch from API below.")
 else:
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Fetch Primary API"):
-            odds_data = fetch_api(API_KEY_PRIMARY)
-            if odds_data:
-                save_cache(odds_data)
-            else:
-                st.warning("Primary API failed or rate-limited.")
-                st.stop()
-    with col2:
-        if st.button("Fetch Secondary API"):
-            odds_data = fetch_api(API_KEY_SECONDARY)
-            if odds_data:
-                save_cache(odds_data)
-            else:
-                st.warning("Secondary API failed or rate-limited.")
-                st.stop()
+    st.sidebar.info("Will fetch from API when you click a Fetch button.")
+
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    if st.button("Fetch Primary API"):
+        fetched = fetch_api(API_KEY_PRIMARY)
+        if fetched:
+            odds_data = fetched
+            save_cache(odds_data)
+            st.sidebar.success("Fetched primary API and saved to cache.")
+        else:
+            st.sidebar.warning("Primary API failed.")
+with col2:
+    if st.button("Fetch Secondary API"):
+        fetched = fetch_api(API_KEY_SECONDARY)
+        if fetched:
+            odds_data = fetched
+            save_cache(odds_data)
+            st.sidebar.success("Fetched secondary API and saved to cache.")
+        else:
+            st.sidebar.warning("Secondary API failed.")
+
+if not odds_data:
+    # If still empty, try loading cache regardless
+    odds_data = load_cache()
     if not odds_data:
-        st.info("Click a fetch button to load player prop data.")
+        st.warning("No odds data available. Fetch API or ensure cache exists.")
         st.stop()
 
 # -----------------------------
-# EXTRACT PLAYER PROPS
+# PARSE / CLEAN ROWS (single canonical set)
 # -----------------------------
 rows = []
 for event in odds_data:
@@ -233,6 +273,7 @@ for event in odds_data:
     odds_list = list(odds_list_raw.values()) if isinstance(odds_list_raw, dict) else odds_list_raw
     players_list = event.get("players") or []
 
+    # build player map
     player_map = {}
     for p in players_list:
         if isinstance(p, dict):
@@ -253,18 +294,21 @@ for event in odds_data:
             continue
         player_info = player_map.get(pid, {"name": clean_player_name(pid), "position": ""})
 
+        # market info (prefer marketName, fallback to market/statName)
         line = (odds_item.get("bookOverUnder") or odds_item.get("fairOverUnder") or
                 odds_item.get("openBookOverUnder") or odds_item.get("openFairOverUnder") or "")
-        market_name = odds_item.get("marketName") or odds_item.get("market") or odds_item.get("statName") or "N/A"
-        market_name = f"{market_name} {line}" if line else market_name
+        market_name = odds_item.get("marketName") or odds_item.get("market") or odds_item.get("statName") or ""
+        market_display = f"{market_name} {line}" if line else market_name
 
+        # collect odds for AvgProb
         odds_by_book = odds_item.get("byBookmaker") or {}
         all_odds = []
         def collect_od(v):
             if v is None:
                 return
             if isinstance(v, dict):
-                if "odds" in v and (isinstance(v["odds"], (int, str))):
+                # common key 'odds' might be numeric or string
+                if "odds" in v and isinstance(v["odds"], (int, str)):
                     all_odds.append(v["odds"])
                 else:
                     for val in v.values():
@@ -285,7 +329,7 @@ for event in odds_data:
 
         avg_prob = average_odds(all_odds)
 
-        market_raw = ""
+        # market raw string for pattern detection (like 'touchdowns-<id>-game-yn-yes')
         try:
             market_raw = odds_item.get("marketKey") or odds_item.get("market") or json.dumps(odds_item)
         except Exception:
@@ -294,7 +338,7 @@ for event in odds_data:
         rows.append({
             "Player": player_info["name"],
             "Position": player_info["position"],
-            "Market": market_name,
+            "Market": market_display,
             "MarketRaw": market_raw,
             "Line": float(line) if (line not in ["", None]) else 0.0,
             "AvgProb": avg_prob,
@@ -310,7 +354,7 @@ if not rows:
     st.stop()
 
 # -----------------------------
-# SIDEBAR CONTROLS
+# SIDEBAR CONTROLS (scoring)
 # -----------------------------
 st.sidebar.title("Controls")
 players = sorted(set(r["Player"] for r in rows))
@@ -329,29 +373,31 @@ for stat in STATS:
 # DISPLAY SELECTED PLAYER PROPS
 # -----------------------------
 player_rows = [r for r in rows if r["Player"] == selected_player]
-df_odds = pd.DataFrame(player_rows).sort_values("Market")
+df_odds = pd.DataFrame(player_rows).sort_values("Market").reset_index(drop=True)
 df_odds_display = df_odds.drop(columns=["Position","MarketRaw"], errors="ignore")
 st.subheader(f"Prop Odds for {selected_player}")
 st.dataframe(df_odds_display)
 
 # -----------------------------
-# FANTASY PROJECTION INPUTS
+# FANTASY PROJECTION INPUTS (selected player)
 # -----------------------------
 proj_cols = st.columns(2)
 projected_stats = {}
 projected_probs = {}
+pos = player_rows[0].get("Position", "") if player_rows else ""
 
 for stat in STATS:
     if stat == "Total Touchdowns":
-        # pull YES Y/N probability when available, but default projected value = 0.5
+        # pull probability from Y/N YES market if present; keep projected numeric default 0.5
         _, yes_prob = get_total_touchdowns_line_and_prob_from_yes(player_rows)
-        line_val = 0.5  # default projection
+        line_val = 0.5  # user-visible default projected count
         avg_prob = yes_prob if yes_prob is not None else 0.5
     else:
         row = find_market(stat, player_rows)
         line_val = row["Line"] if row else 0.0
         avg_prob = row["AvgProb"] if row else 0.5
 
+    # projection input and probability input
     projected_stats[stat] = proj_cols[0].number_input(
         f"Projected {stat}",
         value=float(line_val),
@@ -366,12 +412,12 @@ for stat in STATS:
     )
 
 # -----------------------------
-# CALCULATE PROJECTED FANTASY POINTS (for selected player)
+# CALCULATE PROJECTED FANTASY POINTS (selected player)
 # -----------------------------
 weighted_points = {}
 for stat in STATS:
-    points_per_unit = st.session_state[f"scoring__{stat}"]
-    weighted_points[stat] = projected_stats[stat] * points_per_unit * projected_probs[stat]
+    pts_per_unit = st.session_state[f"scoring__{stat}"]
+    weighted_points[stat] = projected_stats[stat] * pts_per_unit * projected_probs[stat]
 
 total_points = sum(weighted_points.values())
 st.subheader(f"Projected Fantasy Points: {total_points:.2f}")
@@ -381,85 +427,88 @@ st.json(weighted_points)
 # SAVE / REMOVE PROJECTIONS (replace existing)
 # -----------------------------
 if st.button("Save Projection"):
+    # remove any existing saved projection for that player, then append current
     st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
-    st.session_state.projections.append({
+    record = {
         "Player": selected_player,
-        **{s: projected_stats[s] for s in STATS},
-        **{f"{s}_prob": projected_probs[s] for s in STATS},
-        "Position": (player_rows[0].get("Position","") if player_rows else ""),
-        "Total Points": total_points
-    })
+        "Position": pos or "",
+    }
+    for s in STATS:
+        record[s] = float(projected_stats[s])
+        record[f"{s}_prob"] = float(projected_probs[s])
+    record["Total Points"] = float(total_points)
+    st.session_state.projections.append(record)
+    st.success(f"Saved projection for {selected_player}.")
 
 if st.button("Clear Projection for Player"):
-    st.session_state.projections = [p for p in st.session_state.projections if p["Player"] != selected_player]
+    st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
+    st.info(f"Cleared saved projection for {selected_player}.")
 
 # -----------------------------
-# TOP 150 LEADERBOARD (MIRROR PROJECTION FIELDS)
+# TOP 150 LEADERBOARD (mirror projection fields)
 # -----------------------------
-# For each player: if a saved projection exists use that; otherwise build projection using the same logic we used for the inputs
+# For each player: prefer saved projection; otherwise build a projection using the same logic as the inputs
 players_all = sorted(set(r["Player"] for r in rows))
 df_auto = []
 for p in players_all:
     p_rows = [r for r in rows if r["Player"] == p]
     saved = next((x for x in st.session_state.projections if x.get("Player") == p), None)
 
-    record = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else "")}
+    rec = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else "")}
 
-    # fill stat values and probs using saved projection if present, otherwise compute same as inputs
     for stat in STATS:
         if saved:
-            # saved projection stores stat and stat_prob
+            # mirror saved values (so Top150 reflects what you saved)
             val = saved.get(stat, None)
             prob = saved.get(f"{stat}_prob", None)
-            # if saved value missing, fallback to market-derived
+            # fallback to market-derived if missing in saved
             if val is None:
                 if stat == "Total Touchdowns":
-                    lv, ap = get_total_touchdowns_line_and_prob_from_yes(p_rows)
-                    val = 0.5  # keep default projection 0.5
+                    _, ap = get_total_touchdowns_line_and_prob_from_yes(p_rows)
+                    val = 0.5
                     prob = ap
                 else:
                     row = find_market(stat, p_rows)
                     val = row["Line"] if row else 0.0
                     prob = row["AvgProb"] if row else 0.5
         else:
+            # no saved projection; compute same logic as inputs
             if stat == "Total Touchdowns":
-                lv, ap = get_total_touchdowns_line_and_prob_from_yes(p_rows)
-                val = 0.5  # default projection
+                _, ap = get_total_touchdowns_line_and_prob_from_yes(p_rows)
+                val = 0.5
                 prob = ap
             else:
                 row = find_market(stat, p_rows)
                 val = row["Line"] if row else 0.0
                 prob = row["AvgProb"] if row else 0.5
 
-        # ensure numeric
+        # numeric coercion
         try:
-            record[stat] = float(val)
+            rec[stat] = float(val)
         except:
-            record[stat] = 0.0
+            rec[stat] = 0.0
         try:
-            record[f"{stat}_prob"] = float(prob)
+            rec[f"{stat}_prob"] = float(prob)
         except:
-            record[f"{stat}_prob"] = 0.5
+            rec[f"{stat}_prob"] = 0.5
 
-    # compute projected points same as selected-player calc (mirror behavior)
+    # compute total projected points (mirror formula)
     total_pts = 0.0
     for stat in STATS:
         pts_per = st.session_state[f"scoring__{stat}"]
-        total_pts += record[stat] * pts_per * record[f"{stat}_prob"]
-    record["Projected Points"] = total_pts
+        total_pts += rec[stat] * pts_per * rec[f"{stat}_prob"]
+    rec["Projected Points"] = total_pts
+    df_auto.append(rec)
 
-    df_auto.append(record)
-
-# Build DataFrame and select requested column order
 df_auto_top150 = pd.DataFrame(df_auto).sort_values("Projected Points", ascending=False).head(150).reset_index(drop=True)
 
-# required order: Player, Projected Points, Pass Yds, Pass TDs, Rush Yds, Rush TDs, Receptions, Receiving Yds, Receiving TDs, Total TDs
+# Ensure columns and ordering requested by you
 cols_order = [
     "Player", "Projected Points",
     "Pass Yards", "Pass TDs", "Rush Yards", "Rush TDs",
     "Receptions", "Receiving Yards", "Receiving TDs", "Total Touchdowns"
 ]
-# make sure columns exist
+# Add missing columns with zeros if necessary
 for c in cols_order:
     if c not in df_auto_top150.columns:
         df_auto_top150[c] = 0.0
@@ -467,14 +516,23 @@ for c in cols_order:
 df_display_top = df_auto_top150[cols_order].copy()
 
 st.subheader("Top 150 Projected Fantasy Players")
-# Allow position filter
+
+# Position filter
 positions_present = sorted(set(df_auto_top150["Position"].fillna("").unique()))
-positions_present = [p for p in positions_present if p]  # remove blank
+positions_present = [p for p in positions_present if p]  # drop empty
 pos_sel = st.multiselect("Filter positions (Top 150)", options=["All"] + positions_present, default=["All"])
 if pos_sel and "All" not in pos_sel:
     df_display_top = df_auto_top150[df_auto_top150["Position"].isin(pos_sel)][cols_order].reset_index(drop=True)
 
 st.dataframe(df_display_top)
+
+# -----------------------------
+# OPTIONAL: show saved projections (helpful)
+# -----------------------------
+if st.session_state.projections:
+    st.subheader("Saved Projections (session)")
+    df_saved = pd.DataFrame(st.session_state.projections).sort_values("Total Points", ascending=False).reset_index(drop=True)
+    st.dataframe(df_saved)
 
 # -----------------------------
 # REFRESH DATA
