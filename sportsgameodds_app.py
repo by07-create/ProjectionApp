@@ -38,7 +38,6 @@ MARKET_MAP = {
     "Receptions": ["Receptions"],
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
     "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"],
-    # Numeric total-touchdown markets and Y/N player anytime markets handled separately
     "Total Touchdowns": ["Player Touchdowns", "Any Touchdowns", "Any TDs", "Touchdowns"]
 }
 
@@ -110,31 +109,24 @@ def market_text_matches(aliases, market_text, market_raw):
     return False
 
 def skip_home_away_all(market_raw):
-    """Return True if market_raw indicates home/away/all aggregates we want to skip for stat matching."""
     if not market_raw:
         return False
     mr = market_raw.lower()
-    # common tokens that indicate team-level or location variants in market keys
     tokens = ["-home", "_home", "-away", "_away", "-all", "_all", "home", "away", "all"]
-    # don't skip Y/N 'any' markets - they should include 'any' or 'anytime' in alias
     for t in tokens:
         if t in mr:
             return True
     return False
 
 def find_market(stat, player_rows):
-    """Return first matching market row for this stat (dict). Avoid home/away/all keys unless the alias is about 'any'."""
     aliases = MARKET_MAP.get(stat, [stat])
-    # first pass: precise textual match (and prefer non-home/away)
     for r in player_rows:
         m = r.get("Market","")
         raw = r.get("MarketRaw","")
         if market_text_matches(aliases, m, raw):
             if skip_home_away_all(raw) and not any("any" in a.lower() or "player" in a.lower() for a in aliases):
-                # skip this variant (it's home/away/all) unless the alias explicitly refers to any/player
                 continue
             return r
-    # fallback: substring loose match
     for r in player_rows:
         m = normalize(r.get("Market",""))
         for a in aliases:
@@ -145,20 +137,14 @@ def find_market(stat, player_rows):
     return None
 
 def find_total_td_yes_row(player_rows):
-    """
-    Find player-specific YES Y/N anytime touchdown market row if present.
-    Looks for market raw keys containing 'yn-yes' or textual 'anytime' + 'yes'.
-    """
     if not player_rows:
         return None
     for r in player_rows:
         raw = (r.get("MarketRaw") or "").lower()
         market = (r.get("Market") or "").lower()
-        # typical marketKey pattern has 'yn-yes' for yes/no markets
         if ("yn-yes" in raw or "yn_yes" in raw or "yn-yes" in market or "yn_yes" in market):
             if "touchdown" in raw or "touchdown" in market or "touchdowns" in raw or "touchdowns" in market:
                 return r
-        # textual patterns
         if "anytime" in raw and "yes" in raw and "touchdown" in raw:
             return r
         if "anytime" in market and "yes" in market and "touchdown" in market:
@@ -168,18 +154,10 @@ def find_total_td_yes_row(player_rows):
     return None
 
 def get_total_touchdowns_line_and_prob_from_yes(player_rows):
-    """
-    Return (line_val, prob_yes) for Total Touchdowns:
-      - tries 'YES' Y/N player-specific row first (probability from that market)
-      - if not found, fallback to numeric Total Touchdowns market
-      - default (0.5, 0.5)
-    Note: we keep projected default value = 0.5 elsewhere; this returns line/prob only.
-    """
     yes_row = find_total_td_yes_row(player_rows)
     if yes_row:
         prob_yes = yes_row.get("AvgProb", None)
         if prob_yes is None or prob_yes == 0:
-            # collect available numeric odds from common book columns to compute prob
             od_list = []
             for k in ["DraftKings","FanDuel","Caesars","ESPNBet","BetMGM"]:
                 v = yes_row.get(k)
@@ -191,11 +169,31 @@ def get_total_touchdowns_line_and_prob_from_yes(player_rows):
             return (float(line_val) if line_val not in [None, ""] else 0.5, float(prob_yes))
         except:
             return (0.5, float(prob_yes))
-    # fallback to numeric total TD market
     td_row = find_market("Total Touchdowns", player_rows)
     if td_row:
         return (td_row.get("Line", 0.5), td_row.get("AvgProb", 0.5))
     return (0.5, 0.5)
+
+# -----------------------------
+# NEW: Universal weighted average projection helper
+# -----------------------------
+def estimate_projection(player_rows, stat):
+    if stat == "Total Touchdowns":
+        _, prob_yes = get_total_touchdowns_line_and_prob_from_yes(player_rows)
+        return 0.5, prob_yes if prob_yes is not None else 0.5
+
+    row = find_market(stat, player_rows)
+    if not row:
+        return 0.0, 0.5
+
+    all_odds = []
+    for k in ["DraftKings","FanDuel","Caesars","ESPNBet","BetMGM"]:
+        v = row.get(k)
+        if v not in [None, "N/A", ""]:
+            all_odds.append(v)
+    avg_prob = average_odds(all_odds) if all_odds else row.get("AvgProb", 0.5)
+
+    return float(row.get("Line",0.0)), float(avg_prob)
 
 # -----------------------------
 # STREAMLIT SETUP
@@ -204,7 +202,7 @@ st.set_page_config(layout="wide")
 st.title("NFL Player Prop Odds & Fantasy Projection")
 
 if "projections" not in st.session_state:
-    st.session_state.projections = []  # saved projection records: one per player (replace on save)
+    st.session_state.projections = []
 
 # -----------------------------
 # FETCH / CACHE DATA
@@ -227,7 +225,6 @@ if use_cache:
     odds_data = load_cache_from_dropbox()
     if not odds_data:
         st.warning("No cached data found in Dropbox (or cache expired). Please fetch from API.")
-        # keep running so user can click fetch buttons
 else:
     col1, col2 = st.columns(2)
     with col1:
@@ -237,7 +234,6 @@ else:
                 st.warning("Primary API failed.")
             else:
                 odds_data = data
-                # save to dropbox cache
                 payload = {"timestamp": datetime.now().isoformat(), "data": odds_data}
                 try:
                     dbx.files_upload(json.dumps(payload, indent=2).encode("utf-8"), CACHE_FILE, mode=files.WriteMode.overwrite)
@@ -258,13 +254,10 @@ else:
                 except Exception as e:
                     st.error(f"Failed to save cache to Dropbox: {e}")
 
-# if still empty and user didn't check use_cache, try to load cache now
 if not odds_data and use_cache:
-    # already attempted above; pass
     pass
 
 if not odds_data:
-    # nothing loaded yet — show instruction and stop so UI doesn't break
     st.info("Use the sidebar buttons to fetch odds from API or uncheck 'Load cached data' and fetch.")
     st.stop()
 
@@ -296,21 +289,16 @@ for event in odds_data:
         if not pid:
             continue
         player_info = player_map.get(pid, {"name": clean_player_name(pid), "position": ""})
-
-        # market line/name
         line = (odds_item.get("bookOverUnder") or odds_item.get("fairOverUnder")
                 or odds_item.get("openBookOverUnder") or odds_item.get("openFairOverUnder") or "")
         market_name = odds_item.get("marketName") or odds_item.get("market") or odds_item.get("statName") or "N/A"
         market_display = f"{market_name} {line}" if line else market_name
-
-        # collect odds to compute AvgProb
         odds_by_book = odds_item.get("byBookmaker") or {}
         all_odds = []
         def collect_od(v):
             if v is None:
                 return
             if isinstance(v, dict):
-                # consider nested numeric keys
                 if "odds" in v and isinstance(v["odds"], (int, str)):
                     all_odds.append(v["odds"])
                 else:
@@ -319,7 +307,6 @@ for event in odds_data:
                             all_odds.append(val)
             else:
                 all_odds.append(v)
-
         collect_od(odds_item.get('bookOdds','N/A'))
         collect_od(odds_item.get('fairOdds','N/A'))
         collect_od(odds_item.get('openBookOdds','N/A'))
@@ -329,10 +316,7 @@ for event in odds_data:
         collect_od(odds_by_book.get("caesars", {}).get("odds", "N/A"))
         collect_od(odds_by_book.get("espnbet", {}).get("odds", "N/A"))
         collect_od(odds_by_book.get("betmgm", {}).get("odds", "N/A"))
-
         avg_prob = average_odds(all_odds)
-
-        # market_raw (useful to detect yn markets)
         try:
             market_raw = odds_item.get("marketKey") or odds_item.get("market") or json.dumps(odds_item)
         except Exception:
@@ -389,15 +373,7 @@ projected_stats = {}
 projected_probs = {}
 
 for stat in STATS:
-    if stat == "Total Touchdowns":
-        # Pull probability from YES Y/N market if present; default projection value = 0.5
-        _, yes_prob = get_total_touchdowns_line_and_prob_from_yes(player_rows)
-        line_val = 0.5  # default projection value per your request
-        avg_prob = yes_prob if (yes_prob is not None) else 0.5
-    else:
-        row = find_market(stat, player_rows)
-        line_val = row["Line"] if row else 0.0
-        avg_prob = row["AvgProb"] if row else 0.5
+    line_val, avg_prob = estimate_projection(player_rows, stat)
 
     projected_stats[stat] = proj_cols[0].number_input(
         f"Projected {stat}",
@@ -428,7 +404,6 @@ st.json(weighted_points)
 # SAVE / CLEAR PROJECTION (replace existing)
 # -----------------------------
 if st.button("Save Projection"):
-    # replace existing for this player
     st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
     save_record = {
         "Player": selected_player,
@@ -445,7 +420,7 @@ if st.button("Clear Projection for Player"):
     st.info(f"Cleared saved projection for {selected_player}.")
 
 # -----------------------------
-# TOP 150 LEADERBOARD (mirror saved projections or use market-derived defaults)
+# TOP 150 LEADERBOARD
 # -----------------------------
 players_all = sorted(set(r["Player"] for r in rows))
 df_auto = []
@@ -453,82 +428,23 @@ df_auto = []
 for p in players_all:
     p_rows = [r for r in rows if r["Player"] == p]
     saved = next((x for x in st.session_state.projections if x.get("Player") == p), None)
-
     record = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else "")}
 
-    # Build stat and prob fields using saved projection if present; otherwise compute market-derived defaults
     for stat in STATS:
         if saved:
             val = saved.get(stat, None)
             prob = saved.get(f"{stat}_prob", None)
-            if val is None:
-                # fallback to market-derived
-                if stat == "Total Touchdowns":
-                    _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
-                    val = 0.5
-                else:
-                    row = find_market(stat, p_rows)
-                    val = row["Line"] if row else 0.0
-                    prob = row["AvgProb"] if row else 0.5
+            if val is None or prob is None:
+                val, prob = estimate_projection(p_rows, stat)
         else:
-            if stat == "Total Touchdowns":
-                _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
-                val = 0.5
-            else:
-                row = find_market(stat, p_rows)
-                val = row["Line"] if row else 0.0
-                prob = row["AvgProb"] if row else 0.5
-
-        # ensure numeric
-        try:
-            record[stat] = float(val)
-        except:
-            record[stat] = 0.0
-        try:
-            record[f"{stat}_prob"] = float(prob)
-        except:
-            record[f"{stat}_prob"] = 0.5
-
-    # compute projected points using same formula
-    total_pts = 0.0
-    for stat in STATS:
-        pts_per = st.session_state[f"scoring__{stat}"]
-        total_pts += record[stat] * pts_per * record[f"{stat}_prob"]
-    record["Projected Points"] = total_pts
-
+            val, prob = estimate_projection(p_rows, stat)
+        pts_per_unit = st.session_state.get(f"scoring__{stat}", DEFAULT_SCORING[stat])
+        record[stat] = val
+        record[f"{stat}_prob"] = prob
+        record[f"{stat}_pts"] = val * pts_per_unit * prob
+    record["TotalPoints"] = sum(record[f"{s}_pts"] for s in STATS)
     df_auto.append(record)
 
-df_auto_top150 = pd.DataFrame(df_auto).sort_values("Projected Points", ascending=False).head(150).reset_index(drop=True)
-
-# Ensure required column order and existence
-cols_order = [
-    "Player", "Projected Points",
-    "Pass Yards", "Pass TDs", "Rush Yards", "Rush TDs",
-    "Receptions", "Receiving Yards", "Receiving TDs", "Total Touchdowns"
-]
-for c in cols_order:
-    if c not in df_auto_top150.columns:
-        df_auto_top150[c] = 0.0
-
-df_display_top = df_auto_top150[cols_order].copy()
-
-st.subheader("Top 150 Projected Fantasy Players")
-# Position filter
-positions_present = sorted(set(df_auto_top150["Position"].fillna("").unique()))
-positions_present = [p for p in positions_present if p]
-pos_sel = st.multiselect("Filter positions (Top 150)", options=["All"] + positions_present, default=["All"])
-if pos_sel and "All" not in pos_sel:
-    df_display_top = df_auto_top150[df_auto_top150["Position"].isin(pos_sel)][cols_order].reset_index(drop=True)
-
-st.dataframe(df_display_top)
-
-# -----------------------------
-# REFRESH DATA (delete cache and rerun)
-# -----------------------------
-if st.button("Refresh Data (clear cache)"):
-    try:
-        dbx.files_delete_v2(CACHE_FILE)
-        st.success("Cleared Dropbox cache.")
-    except Exception:
-        st.warning("Could not delete Dropbox cache (it may not exist).")
-    st.experimental_rerun()
+df_leaderboard = pd.DataFrame(df_auto).sort_values("TotalPoints", ascending=False).head(150)
+st.subheader("Top 150 Projected Fantasy Points")
+st.dataframe(df_leaderboard)
