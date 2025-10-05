@@ -442,7 +442,7 @@ for p in players_all:
     for stat in STATS:
         row = stat_row_map[stat]
         if stat == "Total Touchdowns":
-            line_val = row[0] if row else 0.5
+            line_val = 0.5
             prob_val = row[1] if row else 0.5
         else:
             line_val = row["Line"] if row else 0.0
