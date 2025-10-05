@@ -360,7 +360,7 @@ for stat in STATS:
     if stat == "Total Touchdowns":
         _, yes_prob = get_total_touchdowns_line_and_prob_from_yes(player_rows)
         line_val = 0.5
-        avg_prob = yes_prob if yes_prob is not None else 0.5
+        avg_prob = yes_prob if (yes_prob is not None) else 0.5
     else:
         row = find_market(stat, player_rows)
         line_val = row["Line"] if row else 0.0
@@ -385,10 +385,7 @@ for stat in STATS:
 weighted_points = {}
 for stat in STATS:
     pts_per_unit = st.session_state[f"scoring__{stat}"]
-    if stat == "Total Touchdowns":
-        weighted_points[stat] = projected_stats[stat] * projected_probs[stat] * pts_per_unit
-    else:
-        weighted_points[stat] = projected_stats[stat] * pts_per_unit  # no multiplication by prob
+    weighted_points[stat] = projected_stats[stat] * pts_per_unit * projected_probs[stat]
 
 total_points = sum(weighted_points.values())
 st.subheader(f"Projected Fantasy Points: {total_points:.2f}")
@@ -447,7 +444,7 @@ for p in players_all:
                 prob = row["AvgProb"] if row else 0.5
 
         try:
-            record[stat] = float(val)
+            record[stat] = float(val)  # <- DISPLAY raw value
         except:
             record[stat] = 0.0
         try:
@@ -455,15 +452,9 @@ for p in players_all:
         except:
             record[f"{stat}_prob"] = 0.5
 
-    total_pts = 0.0
-    for stat in STATS:
-        pts_per = st.session_state[f"scoring__{stat}"]
-        if stat == "Total Touchdowns":
-            total_pts += record[stat] * record[f"{stat}_prob"] * pts_per
-        else:
-            total_pts += record[stat] * pts_per  # no probability multiplier
-
+    total_pts = sum(record[stat] * st.session_state[f"scoring__{stat}"] * record[f"{stat}_prob"] for stat in STATS)
     record["Projected Points"] = total_pts
+
     df_auto.append(record)
 
 df_auto_top150 = pd.DataFrame(df_auto).sort_values("Projected Points", ascending=False).head(150).reset_index(drop=True)
