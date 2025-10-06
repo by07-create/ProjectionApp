@@ -354,12 +354,13 @@ st.subheader(f"Prop Odds for {selected_player}")
 st.dataframe(df_odds_display)
 
 # -----------------------------
-# FANTASY PROJECTION INPUTS
+# FANTASY PROJECTION INPUTS (SIDE-BY-SIDE + PERCENT DISPLAY)
 # -----------------------------
-proj_cols = st.columns(2)
+st.subheader("Player Projections")
 projected_stats = {}
 projected_probs = {}
 
+# Build a mapping of stat -> row (or for total touchdowns, get special tuple)
 player_stat_row_map = {}
 for stat in STATS:
     if stat == "Total Touchdowns":
@@ -367,6 +368,7 @@ for stat in STATS:
     else:
         player_stat_row_map[stat] = find_market(stat, player_rows)
 
+# For each stat, render a single horizontal row: label | projected value | probability %
 for stat in STATS:
     row = player_stat_row_map[stat]
     if stat == "Total Touchdowns":
@@ -376,18 +378,30 @@ for stat in STATS:
         line_val = row["Line"] if row else 0.0
         avg_prob = row["AvgProb"] if row else 0.5
 
-    projected_stats[stat] = proj_cols[0].number_input(
-        f"Projected {stat}",
-        value=float(line_val),
-        step=0.1,
-        key=f"proj_stat__{stat}"
-    )
-    projected_probs[stat] = proj_cols[1].number_input(
-        f"Probability for {stat}",
-        value=float(avg_prob),
-        step=0.01,
-        key=f"proj_prob__{stat}"
-    )
+    # three columns: label, projection input, probability percent input
+    col_label, col_proj, col_prob = st.columns([2, 2, 2])
+    with col_label:
+        st.markdown(f"**{stat}**")
+    with col_proj:
+        projected_stats[stat] = st.number_input(
+            f"proj_{stat}",
+            value=float(line_val),
+            step=0.1,
+            format="%.2f",
+            key=f"proj_stat__{stat}"
+        )
+    with col_prob:
+        # show percentage to user but store as decimal internally
+        pct_default = float(avg_prob) * 100.0
+        pct_input = st.number_input(
+            f"prob_{stat}",
+            value=round(pct_default, 2),
+            step=0.1,
+            format="%.2f",
+            key=f"proj_prob__{stat}_pct"
+        )
+        # convert back to decimal for internal use
+        projected_probs[stat] = float(pct_input) / 100.0
 
 # -----------------------------
 # CALCULATE PROJECTED FANTASY POINTS
