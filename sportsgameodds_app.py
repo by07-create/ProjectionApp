@@ -109,12 +109,6 @@ def market_text_matches(aliases, market_text, market_raw):
     return False
 
 def skip_home_away_all(market_raw):
-    """
-    Only skip when explicit tokens indicate a team/location variant:
-    '-home', '_home', '-away', '_away', '-all', '_all'.
-    This avoids accidentally matching substrings inside player names
-    like 'mahomes' or 'allen'.
-    """
     if not market_raw:
         return False
     mr = market_raw.lower()
@@ -143,17 +137,11 @@ def find_market(stat, player_rows):
     return None
 
 def find_total_td_yes_row(player_rows):
-    """
-    Prioritize explicit market rows where statID == 'touchdowns' and sideID == 'yes'.
-    Fallback to textual heuristics if explicit stat/side fields aren't present.
-    """
     if not player_rows:
         return None
-    # 1) explicit stat/side if present in extracted rows
     for r in player_rows:
         if r.get("StatID") == "touchdowns" and str(r.get("SideID","")).lower() == "yes":
             return r
-    # 2) fallback to previous heuristic checks on MarketRaw/Market strings
     for r in player_rows:
         raw = (r.get("MarketRaw") or "").lower()
         market = (r.get("Market") or "").lower()
@@ -315,7 +303,6 @@ for event in odds_data:
         except:
             market_raw = str(odds_item)
 
-        # --- store statID and sideID so the touchdown check can explicitly match statID=='touchdowns' and sideID=='yes'
         rows.append({
             "Player": player_info["name"],
             "Position": player_info["position"],
@@ -328,7 +315,6 @@ for event in odds_data:
             "Caesars": odds_by_book.get("caesars", {}).get("odds", "N/A"),
             "ESPNBet": odds_by_book.get("espnbet", {}).get("odds", "N/A"),
             "BetMGM": odds_by_book.get("betmgm", {}).get("odds", "N/A"),
-            # new preserved fields for explicit identification
             "StatID": odds_item.get("statID"),
             "SideID": odds_item.get("sideID"),
         })
@@ -379,7 +365,7 @@ for stat in STATS:
 for stat in STATS:
     row = player_stat_row_map[stat]
     if stat == "Total Touchdowns":
-        line_val = 0.5   # DEFAULT TO 0.5
+        line_val = 0.5
         avg_prob = row[1] if row else 0.5
     else:
         line_val = row["Line"] if row else 0.0
