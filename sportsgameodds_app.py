@@ -109,10 +109,16 @@ def market_text_matches(aliases, market_text, market_raw):
     return False
 
 def skip_home_away_all(market_raw):
+    """
+    Only skip when explicit tokens indicate a team/location variant:
+    '-home', '_home', '-away', '_away', '-all', '_all'.
+    This avoids accidentally matching substrings inside player names
+    like 'mahomes' or 'allen'.
+    """
     if not market_raw:
         return False
     mr = market_raw.lower()
-    tokens = ["-home", "_home", "-away", "_away", "-all", "_all", "home", "away", "all"]
+    tokens = ["-home", "_home", "-away", "_away", "-all", "_all"]
     for t in tokens:
         if t in mr:
             return True
