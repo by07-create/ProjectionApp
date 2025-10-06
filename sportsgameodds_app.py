@@ -111,12 +111,17 @@ def market_text_matches(aliases, market_text, market_raw):
             return True
     return False
 
+# --- FIXED FUNCTION ---
 def skip_home_away_all(market_raw):
     if not market_raw:
         return False
     mr = market_raw.lower()
     tokens = ["-home", "_home", "-away", "_away", "-all", "_all"]
-    return any(t in mr for t in tokens)
+    for t in tokens:
+        if mr.endswith(t):  # only skip if it ends with _home/_away/_all
+            return True
+    return False
+# ----------------------
 
 def find_market(stat, player_rows):
     aliases = MARKET_MAP.get(stat, [stat])
@@ -340,16 +345,16 @@ for stat in STATS:
     )
 
 # -----------------------------
-# DISPLAY SELECTED PLAYER PROPS (CASE-INSENSITIVE FIX)
+# DISPLAY SELECTED PLAYER PROPS
 # -----------------------------
-player_rows = [r for r in rows if r["Player"].lower() == selected_player.lower()]
+player_rows = [r for r in rows if r["Player"] == selected_player]
 df_odds = pd.DataFrame(player_rows).sort_values("Market")
 df_odds_display = df_odds.drop(columns=["Position","MarketRaw"], errors="ignore")
 st.subheader(f"Prop Odds for {selected_player}")
 st.dataframe(df_odds_display)
 
 # -----------------------------
-# FANTASY PROJECTION INPUTS (CASE-INSENSITIVE FIX)
+# FANTASY PROJECTION INPUTS
 # -----------------------------
 proj_cols = st.columns(2)
 projected_stats = {}
@@ -400,7 +405,7 @@ st.json(weighted_points)
 # SAVE / CLEAR PROJECTION
 # -----------------------------
 if st.button("Save Projection"):
-    st.session_state.projections = [p for p in st.session_state.projections if p.get("Player").lower() != selected_player.lower()]
+    st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
     save_record = {
         "Player": selected_player,
         **{s: projected_stats[s] for s in STATS},
@@ -412,7 +417,7 @@ if st.button("Save Projection"):
     st.success(f"Saved projection for {selected_player}.")
 
 if st.button("Clear Projection for Player"):
-    st.session_state.projections = [p for p in st.session_state.projections if p.get("Player").lower() != selected_player.lower()]
+    st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
     st.info(f"Cleared saved projection for {selected_player}.")
 
 # -----------------------------
@@ -422,8 +427,8 @@ players_all = sorted(set(r["Player"] for r in rows))
 df_auto = []
 
 for p in players_all:
-    p_rows = [r for r in rows if r["Player"].lower() == p.lower()]
-    saved = next((x for x in st.session_state.projections if x.get("Player").lower() == p.lower()), None)
+    p_rows = [r for r in rows if r["Player"] == p]
+    saved = next((x for x in st.session_state.projections if x.get("Player") == p), None)
 
     record = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else "")}
 
