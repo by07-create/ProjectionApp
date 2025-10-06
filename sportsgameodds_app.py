@@ -35,7 +35,7 @@ MARKET_MAP = {
     "Pass TDs": ["Passing TDs", "Pass Touchdowns", "Passing Touchdowns"],
     "Rush Yards": ["Rushing Yards", "Rush Yds"],
     "Rush TDs": ["Rushing TDs", "Rush Touchdowns"],
-    "Receptions": ["receiving_receptions"],  # fixed field
+    "Receptions": ["receiving_receptions"],
     "Receiving Yards": ["Receiving Yards", "Rec Yds"],
     "Receiving TDs": ["Receiving TDs", "Rec Touchdowns"],
     "Total Touchdowns": ["Player Touchdowns", "Any Touchdowns", "Any TDs", "Touchdowns"]
@@ -62,8 +62,11 @@ dbx = Dropbox(
 # HELPERS
 # -----------------------------
 def clean_player_name(pid):
+    """Convert API playerID like 'JOSH_ALLEN_1_NFL' to 'Josh Allen'."""
     parts = str(pid).split("_")
-    return " ".join(parts[:-2]).title() if len(parts) >= 2 else pid
+    if len(parts) >= 2:
+        return " ".join(parts[:-2]).title()
+    return pid.title()
 
 def fetch_api(api_key):
     headers = {"x-api-key": api_key}
@@ -113,10 +116,7 @@ def skip_home_away_all(market_raw):
         return False
     mr = market_raw.lower()
     tokens = ["-home", "_home", "-away", "_away", "-all", "_all"]
-    for t in tokens:
-        if t in mr:
-            return True
-    return False
+    return any(t in mr for t in tokens)
 
 def find_market(stat, player_rows):
     aliases = MARKET_MAP.get(stat, [stat])
