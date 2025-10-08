@@ -246,24 +246,19 @@ if not odds_data:
 # -----------------------------
 # (your existing extraction logic is unchanged)
 # -----------------------------
-# ROTOWIRE FETCH (auto-updated slate)
+# ROTOWIRE FETCH (AUTO SLATE)
 # -----------------------------
 try:
-    slate_resp = requests.get("https://www.rotowire.com/daily/nfl/optimizer.php?site=FanDuel", timeout=10)
+    slate_resp = requests.get("https://www.rotowire.com/daily/tables/slates-nfl.php", timeout=15)
     slate_resp.raise_for_status()
-    text = slate_resp.text
-    import re
-    match = re.search(r"slateID=(\d+)", text)
-    if match:
-        slate_id = match.group(1)
-    else:
-        slate_id = 8739
-        st.warning("Couldn't detect latest slate ID — using fallback 8739.")
-except Exception as e:
-    st.warning(f"Error fetching slate ID: {e}")
-    slate_id = 8739
+    slate_json = slate_resp.json()
+    latest_slate = slate_json[0]["id"] if slate_json else 8739
+    st.info(f"Using latest Rotowire slate ID: {latest_slate}")
+except Exception:
+    st.warning("Couldn't detect latest slate ID — using fallback 8739")
+    latest_slate = 8739
 
-rotowire_url = f"https://www.rotowire.com/daily/nfl/api/players.php?slateID={slate_id}"
+rotowire_url = f"https://www.rotowire.com/daily/nfl/api/players.php?slateID={latest_slate}"
 try:
     rw_resp = requests.get(rotowire_url, timeout=15)
     rw_resp.raise_for_status()
