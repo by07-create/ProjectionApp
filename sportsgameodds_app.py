@@ -263,6 +263,9 @@ for game in odds_data:
             "StatID": prop.get("StatID"),
             "SideID": prop.get("SideID")
         }
+        # Ensure all keys exist
+        for k in ["Market","MarketRaw","Line","AvgProb","Position","DraftKings","FanDuel","Caesars","ESPNBet","BetMGM"]:
+            row.setdefault(k, None)
         rows.append(row)
 
 # -----------------------------
@@ -287,6 +290,10 @@ except Exception as e:
     st.warning(f"Failed to load Rotowire data: {e}")
     rotowire_data = []
 
+rotowire_map = {}
+for p in rotowire_data:
+    rotowire_map[p.get("displayName","")] = {"salary": p.get("salary"), "proj_pts": p.get("projPoints")}
+
 # -----------------------------
 # SIDEBAR CONTROLS
 # -----------------------------
@@ -307,7 +314,12 @@ for stat in STATS:
 # DISPLAY SELECTED PLAYER PROPS
 # -----------------------------
 player_rows = [r for r in rows if r["Player"] == selected_player]
-df_odds = pd.DataFrame(player_rows).sort_values("Market")
+# Ensure all keys exist for safety
+for r in player_rows:
+    for k in ["Market","MarketRaw","Line","AvgProb","Position","DraftKings","FanDuel","Caesars","ESPNBet","BetMGM"]:
+        r.setdefault(k, None)
+
+df_odds = pd.DataFrame(player_rows).sort_values("Market", key=lambda x: x.fillna(""))
 df_odds_display = df_odds.drop(columns=["Position","MarketRaw"], errors="ignore")
 st.subheader(f"Prop Odds for {selected_player}")
 st.dataframe(df_odds_display)
@@ -331,8 +343,8 @@ for stat in STATS:
         line_val = 0.5
         avg_prob = row[1] if row else 0.5
     else:
-        line_val = row["Line"] if row else 0.0
-        avg_prob = row["AvgProb"] if row else 0.5
+        line_val = row.get("Line", 0.0) if row else 0.0
+        avg_prob = row.get("AvgProb", 0.5) if row else 0.5
 
     col_label, col_proj, col_prob = st.columns([2, 2, 2])
     with col_label:
@@ -396,7 +408,7 @@ df_auto = []
 for p in players_all:
     p_rows = [r for r in rows if r["Player"] == p]
     weighted_points = {}
-    row_data = {"Player": p, "Position": p_rows[0]["Position"] if p_rows else ""}
+    row_data = {"Player": p, "Position": p_rows[0].get("Position","") if p_rows else ""}
 
     # Build player_stat_row_map for this player
     player_stat_row_map = {}
@@ -412,8 +424,8 @@ for p in players_all:
             line_val = 0.5
             avg_prob = row[1] if row else 0.5
         else:
-            line_val = row["Line"] if row else 0.0
-            avg_prob = row["AvgProb"] if row else 0.5
+            line_val = row.get("Line", 0.0) if row else 0.0
+            avg_prob = row.get("AvgProb", 0.5) if row else 0.5
         pts_per_unit = DEFAULT_SCORING[stat]
         weighted_points[stat] = line_val * pts_per_unit * avg_prob
         row_data[stat] = line_val
@@ -428,9 +440,15 @@ for p in players_all:
     df_auto.append(row_data)
 
 df_auto = pd.DataFrame(df_auto)
-cols = ["Player", "Position", "Total Points", "Salary", "RotowirePoints", "Value"] + \
-       [s for s in STATS] + [f"{s}_prob" for s in STATS]
-df_auto = df_auto[cols].sort_values("Total Points", ascending=False).head(150)
+
+# Ensure all expected columns exist
+expected_cols = ["Player", "Position", "Total Points", "Salary", "RotowirePoints", "Value"] + \
+                [s for s in STATS] + [f"{s}_prob" for s in STATS]
+for col in expected_cols:
+    if col not in df_auto.columns:
+        df_auto[col] = None
+
+df_auto = df_auto[expected_cols].sort_values("Total Points", ascending=False).head(150)
 df_auto.insert(0, "Rank", range(1, len(df_auto)+1))
 st.subheader("Top 150 Player Projections")
 st.dataframe(df_auto)
