@@ -478,7 +478,7 @@ for p in players_all:
 
 df_auto = pd.DataFrame(df_auto)
 cols = ["Player", "Total Points", "Position"] + [s for s in STATS] + [f"{s}_prob" for s in STATS]
-df_auto = df_auto[cols].sort_values("Total Points", ascending=False).head(150)
+df_auto = df_auto[cols].sort_values("Total Points", ascending=False).head(250)
 df_auto.insert(0, "Rank", range(1, len(df_auto) + 1))  # Add rank column
-st.subheader("Top 150 Projected Fantasy Leaders")
+st.subheader("Top 250 Projected Fantasy Leaders")
 st.dataframe(df_auto)
