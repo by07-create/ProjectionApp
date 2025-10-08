@@ -16,6 +16,8 @@ LEAGUE_ID = "NFL"
 LIMIT = 200
 CACHE_FILE = "/odds_cache.json"
 CACHE_MAX_AGE_MINUTES = 10080  # 7 days
+ROTOWIRE_SLATE_ID = 8739
+ROTOWIRE_URL = f"https://www.rotowire.com/daily/nfl/api/players.php?slateID={ROTOWIRE_SLATE_ID}"
 
 DEFAULT_SCORING = {
     "Pass Yards": 0.04,
@@ -80,6 +82,15 @@ def fetch_api(api_key):
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching odds: {e}")
         return None
+
+def fetch_rotowire():
+    try:
+        r = requests.get(ROTOWIRE_URL, timeout=20)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        st.warning(f"Failed to load Rotowire data: {e}")
+        return {}
 
 def american_to_prob(odds):
     try:
@@ -326,33 +337,28 @@ if not rows:
     st.stop()
 
 # -----------------------------
-# ROTOWIRE DATA FETCH
+# ROTOWIRE INTEGRATION
 # -----------------------------
-rw_data = {}
-slate_id = None
-if odds_data:
-    # try to get slateID from first event
-    slate_id = odds_data[0].get("slateID") or odds_data[0].get("slateId")
-if slate_id:
-    try:
-        url_rw = f"https://www.rotowire.com/daily/nfl/api/players.php?slateID={slate_id}"
-        resp = requests.get(url_rw, timeout=20)
-        resp.raise_for_status()
-        rw_json = resp.json()
+rw_json = fetch_rotowire()
+# Build normalized mapping
+rw_data_map = {}
+for k, p in rw_json.items():
+    rw_name = f"{p['firstName']} {p['lastName']}"
+    rw_key = ''.join(c.lower() for c in rw_name if c.isalnum())
+    rw_data_map[rw_key] = {
+        "Salary": p.get("salary", 0),
+        "ProjPoints": float(p.get("pts", 0) or 0)
+    }
 
-        if isinstance(rw_json, list):
-            players_list = rw_json
-        elif isinstance(rw_json, dict) and "players" in rw_json:
-            players_list = rw_json["players"]
-        else:
-            players_list = []
-
-        for p in players_list:
-            name = p.get("displayName", "")
-            rw_data[name] = {"Salary": p.get("salary", 0), "ProjPoints": p.get("projPoints", 0.0)}
-
-    except Exception as e:
-        st.warning(f"Failed to load Rotowire data: {e}")
+# Merge into rows
+for r in rows:
+    r_key = ''.join(c.lower() for c in r["Player"] if c.isalnum())
+    if r_key in rw_data_map:
+        r["Salary"] = rw_data_map[r_key]["Salary"]
+        r["ProjPoints"] = rw_data_map[r_key]["ProjPoints"]
+    else:
+        r["Salary"] = 0
+        r["ProjPoints"] = 0
 
 # -----------------------------
 # SIDEBAR CONTROLS
@@ -376,21 +382,16 @@ for stat in STATS:
 player_rows = [r for r in rows if r["Player"] == selected_player]
 df_odds = pd.DataFrame(player_rows).sort_values("Market")
 df_odds_display = df_odds.drop(columns=["Position","MarketRaw"], errors="ignore")
-
-# Add Rotowire salary / projection columns
-rw_info = rw_data.get(selected_player, {})
-df_odds_display["Salary"] = rw_info.get("Salary", 0)
-df_odds_display["ProjPoints"] = rw_info.get("ProjPoints", 0.0)
-
 st.subheader(f"Prop Odds for {selected_player}")
 st.dataframe(df_odds_display)
 
 # -----------------------------
-# FANTASY PROJECTION INPUTS
+# FANTASY PROJECTION INPUTS (SIDE-BY-SIDE + PERCENT DISPLAY)
 # -----------------------------
 st.subheader("Player Projections")
 projected_stats = {}
 projected_probs = {}
+
 player_stat_row_map = {}
 for stat in STATS:
     if stat == "Total Touchdowns":
@@ -435,80 +436,16 @@ for stat in STATS:
 weighted_points = {}
 for stat in STATS:
     pts_per_unit = st.session_state[f"scoring__{stat}"]
-    weighted_points[stat] = projected_stats[stat] * pts_per_unit * projected_probs[stat]
+    weighted_points[stat] = projected_stats[stat] * pts_per_unit
 
+st.subheader(f"Projected Fantasy Points for {selected_player}")
 total_points = sum(weighted_points.values())
-st.subheader(f"Projected Fantasy Points: {total_points:.2f}")
-st.json(weighted_points)
+st.metric("Total Projected Points", f"{total_points:.2f}")
+st.dataframe(pd.DataFrame.from_dict(weighted_points, orient="index", columns=["Points per Stat"]))
 
 # -----------------------------
-# SAVE / CLEAR PROJECTION
+# PLAYER TABLE
 # -----------------------------
-if st.button("Save Projection"):
-    st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
-    save_record = {
-        "Player": selected_player,
-        **{s: projected_stats[s] for s in STATS},
-        **{f"{s}_prob": projected_probs[s] for s in STATS},
-        "Position": (player_rows[0].get("Position","") if player_rows else ""),
-        "Total Points": total_points
-    }
-    st.session_state.projections.append(save_record)
-    st.success(f"Saved projection for {selected_player}.")
-
-if st.button("Clear Projection for Player"):
-    st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
-    st.info(f"Cleared saved projection for {selected_player}.")
-
-# -----------------------------
-# TOP 150 LEADERBOARD
-# -----------------------------
-players_all = sorted(set(r["Player"] for r in rows))
-df_auto = []
-
-for p in players_all:
-    p_rows = [r for r in rows if r["Player"] == p]
-    saved = next((x for x in st.session_state.projections if x.get("Player") == p), None)
-
-    record = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else "")}
-    stat_row_map = {}
-    for stat in STATS:
-        if saved:
-            val = saved.get(stat, None)
-            prob = saved.get(f"{stat}_prob", None)
-            if val is None:
-                if stat == "Total Touchdowns":
-                    _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
-                    val = 0.5
-                else:
-                    stat_row_map[stat] = find_market(stat, p_rows)
-                    val = stat_row_map[stat]["Line"] if stat_row_map[stat] else 0.0
-                    prob = stat_row_map[stat]["AvgProb"] if stat_row_map[stat] else 0.5
-            record[stat] = val
-            record[f"{stat}_prob"] = prob
-        else:
-            if stat == "Total Touchdowns":
-                val = 0.5
-                _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
-            else:
-                stat_row_map[stat] = find_market(stat, p_rows)
-                val = stat_row_map[stat]["Line"] if stat_row_map[stat] else 0.0
-                prob = stat_row_map[stat]["AvgProb"] if stat_row_map[stat] else 0.5
-            record[stat] = val
-            record[f"{stat}_prob"] = prob
-
-    # Add Rotowire data if available
-    rw_info = rw_data.get(p, {})
-    record["Salary"] = rw_info.get("Salary", 0)
-    record["ProjPoints"] = rw_info.get("ProjPoints", 0.0)
-
-    total_pts = sum(record[stat] * st.session_state[f"scoring__{stat}"] * record[f"{stat}_prob"] for stat in STATS)
-    record["Total Points"] = total_pts
-    df_auto.append(record)
-
-df_auto = pd.DataFrame(df_auto)
-cols = ["Player", "Total Points", "Position", "Salary", "ProjPoints"] + [s for s in STATS] + [f"{s}_prob" for s in STATS]
-df_auto = df_auto[cols].sort_values("Total Points", ascending=False).head(150)
-df_auto.insert(0, "Rank", range(1, len(df_auto) + 1))
-st.subheader("Top 150 Projected Fantasy Leaders")
-st.dataframe(df_auto)
+st.subheader("All Player Data")
+df_all = pd.DataFrame(rows)
+st.dataframe(df_all.sort_values(["Player","Market"]))
