@@ -5,7 +5,6 @@ import json
 import os
 from datetime import datetime
 from dropbox import Dropbox, files
-import io
 
 # -----------------------------
 # CONFIG
@@ -81,6 +80,28 @@ def fetch_api(api_key):
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching odds: {e}")
         return None
+
+def fetch_rotowire_json(slate_id):
+    """Fetch salaries and projected points from Rotowire JSON API"""
+    url = f"https://www.rotowire.com/daily/nfl/api/players.php?slateID={slate_id}"
+    try:
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        # Map player name -> salary / proj points
+        rw_map = {}
+        for p in data:
+            name = p.get("displayName") or p.get("name")
+            if not name:
+                continue
+            rw_map[name] = {
+                "Salary": p.get("salary", 0),
+                "ProjPoints": p.get("projPts", 0.0)
+            }
+        return rw_map
+    except requests.exceptions.RequestException as e:
+        st.error(f"Failed to load Rotowire data: {e}")
+        return {}
 
 def american_to_prob(odds):
     try:
@@ -190,7 +211,14 @@ if "projections" not in st.session_state:
     st.session_state.projections = []
 
 # -----------------------------
-# FETCH / CACHE DATA
+# SLATE INPUT
+# -----------------------------
+st.sidebar.title("Slate Settings")
+slate_id = st.sidebar.text_input("Rotowire Slate ID", value="8739")
+rw_data = fetch_rotowire_json(slate_id)
+
+# -----------------------------
+# FETCH / CACHE ODDS DATA
 # -----------------------------
 use_cache = st.sidebar.checkbox("Load cached data instead of fetching API")
 odds_data = []
@@ -306,6 +334,9 @@ for event in odds_data:
         except:
             market_raw = str(odds_item)
 
+        # Add Rotowire salary and projection points if available
+        rw_info = rw_data.get(player_info["name"], {"Salary": 0, "ProjPoints": 0.0})
+
         rows.append({
             "Player": player_info["name"],
             "Position": player_info["position"],
@@ -320,6 +351,8 @@ for event in odds_data:
             "BetMGM": odds_by_book.get("betmgm", {}).get("odds", "N/A"),
             "StatID": odds_item.get("statID"),
             "SideID": odds_item.get("sideID"),
+            "Salary": rw_info["Salary"],
+            "ProjPoints": rw_info["ProjPoints"]
         })
 
 if not rows:
@@ -357,8 +390,8 @@ st.dataframe(df_odds_display)
 st.subheader("Player Projections")
 projected_stats = {}
 projected_probs = {}
-player_stat_row_map = {}
 
+player_stat_row_map = {}
 for stat in STATS:
     if stat == "Total Touchdowns":
         player_stat_row_map[stat] = get_total_touchdowns_line_and_prob_from_yes(player_rows)
@@ -418,7 +451,9 @@ if st.button("Save Projection"):
         **{s: projected_stats[s] for s in STATS},
         **{f"{s}_prob": projected_probs[s] for s in STATS},
         "Position": (player_rows[0].get("Position","") if player_rows else ""),
-        "Total Points": total_points
+        "Total Points": total_points,
+        "Salary": player_rows[0].get("Salary",0),
+        "ProjPoints": player_rows[0].get("ProjPoints",0.0)
     }
     st.session_state.projections.append(save_record)
     st.success(f"Saved projection for {selected_player}.")
@@ -437,7 +472,9 @@ for p in players_all:
     p_rows = [r for r in rows if r["Player"] == p]
     saved = next((x for x in st.session_state.projections if x.get("Player") == p), None)
 
-    record = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else "")}
+    record = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else ""),
+              "Salary": p_rows[0].get("Salary",0),
+              "ProjPoints": p_rows[0].get("ProjPoints",0.0)}
 
     stat_row_map = {}
     for stat in STATS:
@@ -470,29 +507,8 @@ for p in players_all:
     df_auto.append(record)
 
 df_auto = pd.DataFrame(df_auto)
-cols = ["Player", "Total Points", "Position"] + [s for s in STATS] + [f"{s}_prob" for s in STATS]
+cols = ["Player", "Total Points", "Position", "Salary", "ProjPoints"] + [s for s in STATS] + [f"{s}_prob" for s in STATS]
 df_auto = df_auto[cols].sort_values("Total Points", ascending=False).head(150)
 df_auto.insert(0, "Rank", range(1, len(df_auto) + 1))
-
-# -----------------------------
-# ROTOWIRE SALARY & PROJECTION INTEGRATION
-# -----------------------------
-rotowire_slate_id = st.sidebar.text_input("Rotowire Slate ID", value="")
-
-rotowire_data = []
-if rotowire_slate_id:
-    try:
-        rotowire_url = f"https://rotowire.com/slates/{rotowire_slate_id}/export.csv"
-        r = requests.get(rotowire_url, timeout=10)
-        r.raise_for_status()
-        df_rw = pd.read_csv(io.StringIO(r.text))
-        rotowire_data = df_rw[["Player", "Salary", "ProjPoints"]].copy()
-        rotowire_data["Player"] = rotowire_data["Player"].str.strip()
-    except Exception as e:
-        st.warning(f"Failed to load Rotowire data: {e}")
-
-if not df_auto.empty and not rotowire_data == []:
-    df_auto = df_auto.merge(rotowire_data, on="Player", how="left")
-
 st.subheader("Top 150 Projected Fantasy Leaders")
 st.dataframe(df_auto)
