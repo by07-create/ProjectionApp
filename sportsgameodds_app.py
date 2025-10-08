@@ -81,17 +81,6 @@ def fetch_api(api_key):
         st.error(f"Error fetching odds: {e}")
         return None
 
-def fetch_rotowire(slate_id):
-    url = f"https://www.rotowire.com/daily/nfl/api/players.php?slateID={slate_id}"
-    try:
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        return data
-    except requests.exceptions.RequestException as e:
-        st.warning(f"Failed to load Rotowire data: {e}")
-        return {}
-
 def american_to_prob(odds):
     try:
         odds = int(odds)
@@ -256,8 +245,6 @@ if not odds_data:
 # EXTRACT PLAYER PROPS
 # -----------------------------
 rows = []
-rotowire_data = fetch_rotowire(slate_id=8739)
-
 for event in odds_data:
     odds_list_raw = event.get("odds") or []
     odds_list = list(odds_list_raw.values()) if isinstance(odds_list_raw, dict) else odds_list_raw
@@ -318,16 +305,6 @@ for event in odds_data:
         except:
             market_raw = str(odds_item)
 
-        # Match Rotowire salary/pts if exists
-        rw_salary = 0
-        rw_proj = 0
-        for rw_player in rotowire_data.values():
-            full_name_rw = f"{rw_player.get('firstName','')} {rw_player.get('lastName','')}".strip()
-            if full_name_rw == player_info["name"]:
-                rw_salary = rw_player.get("salary", 0)
-                rw_proj = float(rw_player.get("pts") or 0)
-                break
-
         rows.append({
             "Player": player_info["name"],
             "Position": player_info["position"],
@@ -342,13 +319,36 @@ for event in odds_data:
             "BetMGM": odds_by_book.get("betmgm", {}).get("odds", "N/A"),
             "StatID": odds_item.get("statID"),
             "SideID": odds_item.get("sideID"),
-            "Salary": rw_salary,
-            "RotowireProj": rw_proj
         })
 
 if not rows:
     st.warning("No player prop odds found in the returned data.")
     st.stop()
+
+# -----------------------------
+# ROTOWIRE FETCH
+# -----------------------------
+slate_id = 8739
+rotowire_url = f"https://www.rotowire.com/daily/nfl/api/players.php?slateID={slate_id}"
+try:
+    rw_resp = requests.get(rotowire_url, timeout=15)
+    rw_resp.raise_for_status()
+    rotowire_data = rw_resp.json()
+except Exception as e:
+    st.warning(f"Failed to load Rotowire data: {e}")
+    rotowire_data = []
+
+# Build a map from player name -> salary/pts
+rotowire_map = {}
+for rw_player in rotowire_data:  # <- fixed for list
+    try:
+        full_name = f"{rw_player.get('firstName','')} {rw_player.get('lastName','')}".strip()
+        rotowire_map[full_name] = {
+            "salary": rw_player.get("salary"),
+            "proj_pts": float(rw_player.get("pts",0))
+        }
+    except Exception:
+        continue
 
 # -----------------------------
 # SIDEBAR CONTROLS
@@ -381,7 +381,6 @@ st.dataframe(df_odds_display)
 st.subheader("Player Projections")
 projected_stats = {}
 projected_probs = {}
-
 player_stat_row_map = {}
 for stat in STATS:
     if stat == "Total Touchdowns":
@@ -425,53 +424,38 @@ for stat in STATS:
 # -----------------------------
 weighted_points = {}
 for stat in STATS:
-    pts_per_unit = st.session_state.get(f"scoring__{stat}", float(DEFAULT_SCORING[stat]))
+    pts_per_unit = st.session_state[f"scoring__{stat}"]
     weighted_points[stat] = projected_stats[stat] * pts_per_unit * projected_probs[stat]
 
 total_points = sum(weighted_points.values())
-st.session_state.projections = projected_stats  # save last projection
-
-st.subheader("Projected Fantasy Points: {:.2f}".format(total_points))
-st.table(pd.DataFrame.from_dict(weighted_points, orient="index", columns=["Points"]))
+st.subheader(f"Projected Fantasy Points: {total_points:.2f}")
+st.json(weighted_points)
 
 # -----------------------------
-# TOP 150 LEADERBOARD (UPDATED)
+# SAVE / CLEAR PROJECTION
 # -----------------------------
-players_all = sorted(set(r["Player"] for r in rows))
-df_leaderboard = []
-
-for p in players_all:
-    p_rows = [r for r in rows if r["Player"] == p]
-    saved = next((x for x in st.session_state.projections if x.get("Player") == p), None)
-
-    record = {
-        "Player": p,
-        "Position": p_rows[0].get("Position", "") if p_rows else "",
-        "Salary": p_rows[0].get("Salary", 0),  # from Rotowire
-        "RotowireProj": p_rows[0].get("RotowireProj", 0)  # from Rotowire
+if st.button("Save Projection"):
+    st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
+    proj_entry = {
+        "Player": selected_player,
+        "Position": player_rows[0]["Position"] if player_rows else "",
+        "ProjectedPoints": total_points,
+        "RotowirePoints": rotowire_map.get(selected_player, {}).get("proj_pts"),
+        "Salary": rotowire_map.get(selected_player, {}).get("salary"),
+        "Value": rotowire_map.get(selected_player, {}).get("salary",0)/total_points if total_points else 0
     }
+    st.session_state.projections.append(proj_entry)
+    st.success("Saved.")
 
-    # Use saved projections if available; otherwise fallback to calculated projections
-    total_pts = 0
-    for stat in STATS:
-        val = saved.get(stat) if saved else (0.5 if stat == "Total Touchdowns" else (find_market(stat, p_rows)["Line"] if find_market(stat, p_rows) else 0.0))
-        prob = saved.get(f"{stat}_prob") if saved else (0.5 if stat == "Total Touchdowns" else (find_market(stat, p_rows)["AvgProb"] if find_market(stat, p_rows) else 0.5))
-        total_pts += val * st.session_state[f"scoring__{stat}"] * prob
-        record[stat] = val
-        record[f"{stat}_prob"] = prob
+if st.button("Clear Projections"):
+    st.session_state.projections = []
 
-    record["Total Points"] = total_pts
-    record["Value"] = record["Salary"] / total_pts if total_pts else 0
-    df_leaderboard.append(record)
-
-# Convert to DataFrame, sort by Total Points descending, take top 150
-df_leaderboard = pd.DataFrame(df_leaderboard)
-df_leaderboard = df_leaderboard.sort_values("Total Points", ascending=False).head(150)
-df_leaderboard.insert(0, "Rank", range(1, len(df_leaderboard) + 1))  # Add rank column before Player
-
-# Define display columns
-cols = ["Rank", "Player", "Position", "Total Points", "Salary", "RotowireProj", "Value"] + [s for s in STATS] + [f"{s}_prob" for s in STATS]
-df_leaderboard = df_leaderboard[cols]
-
-st.subheader("Top 150 Projected Fantasy Leaders (with Salary & Value)")
-st.dataframe(df_leaderboard)
+# -----------------------------
+# DISPLAY TOP 150 PROJECTIONS
+# -----------------------------
+if st.session_state.projections:
+    df_proj = pd.DataFrame(st.session_state.projections)
+    df_proj = df_proj.sort_values("ProjectedPoints", ascending=False).head(150)
+    df_proj.insert(0, "Rank", range(1, len(df_proj)+1))
+    st.subheader("Top 150 Player Projections")
+    st.dataframe(df_proj)
