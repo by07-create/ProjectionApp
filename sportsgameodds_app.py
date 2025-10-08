@@ -451,11 +451,38 @@ if st.button("Clear Projections"):
     st.session_state.projections = []
 
 # -----------------------------
-# DISPLAY TOP 150 PROJECTIONS
+# CALCULATE PROJECTIONS FOR ALL PLAYERS
 # -----------------------------
-if st.session_state.projections:
-    df_proj = pd.DataFrame(st.session_state.projections)
-    df_proj = df_proj.sort_values("ProjectedPoints", ascending=False).head(150)
-    df_proj.insert(0, "Rank", range(1, len(df_proj)+1))
-    st.subheader("Top 150 Player Projections")
-    st.dataframe(df_proj)
+all_players = list({r["Player"] for r in rows})
+proj_list = []
+
+for player in all_players:
+    player_rows = [r for r in rows if r["Player"] == player]
+    weighted_points = {}
+    for stat in STATS:
+        row = player_stat_row_map.get(stat) or find_market(stat, player_rows)
+        if stat == "Total Touchdowns":
+            line_val, avg_prob = get_total_touchdowns_line_and_prob_from_yes(player_rows)
+        else:
+            line_val = row["Line"] if row else 0.0
+            avg_prob = row["AvgProb"] if row else 0.5
+        pts_per_unit = DEFAULT_SCORING[stat]
+        weighted_points[stat] = line_val * pts_per_unit * avg_prob
+    total_points = sum(weighted_points.values())
+    salary = rotowire_map.get(player, {}).get("salary")
+    proj_list.append({
+        "Player": player,
+        "Position": player_rows[0]["Position"] if player_rows else "",
+        "ProjectedPoints": total_points,
+        "RotowirePoints": rotowire_map.get(player, {}).get("proj_pts"),
+        "Salary": salary,
+        "Value": salary/total_points if total_points and salary else 0
+    })
+
+# -----------------------------
+# DISPLAY TOP 150 TABLE
+# -----------------------------
+df_proj = pd.DataFrame(proj_list).sort_values("ProjectedPoints", ascending=False).head(150)
+df_proj.insert(0, "Rank", range(1, len(df_proj)+1))
+st.subheader("Top 150 Player Projections")
+st.dataframe(df_proj)
