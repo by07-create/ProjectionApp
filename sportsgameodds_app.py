@@ -338,9 +338,8 @@ except Exception as e:
     st.warning(f"Failed to load Rotowire data: {e}")
     rotowire_data = []
 
-# Build a map from player name -> salary/pts
 rotowire_map = {}
-for rw_player in rotowire_data:  # <- fixed for list
+for rw_player in rotowire_data:  # List iteration
     try:
         full_name = f"{rw_player.get('firstName','')} {rw_player.get('lastName','')}".strip()
         rotowire_map[full_name] = {
@@ -442,7 +441,7 @@ if st.button("Save Projection"):
         "ProjectedPoints": total_points,
         "RotowirePoints": rotowire_map.get(selected_player, {}).get("proj_pts"),
         "Salary": rotowire_map.get(selected_player, {}).get("salary"),
-        "Value": rotowire_map.get(selected_player, {}).get("salary",0)/total_points if total_points else 0
+        "Value": (total_points / rotowire_map.get(selected_player, {}).get("salary",1) * 100) if total_points else 0
     }
     st.session_state.projections.append(proj_entry)
     st.success("Saved.")
@@ -451,38 +450,40 @@ if st.button("Clear Projections"):
     st.session_state.projections = []
 
 # -----------------------------
-# CALCULATE PROJECTIONS FOR ALL PLAYERS
+# CALCULATE TOP 150
 # -----------------------------
-all_players = list({r["Player"] for r in rows})
-proj_list = []
+players_all = list({r["Player"] for r in rows})
+df_auto = []
 
-for player in all_players:
-    player_rows = [r for r in rows if r["Player"] == player]
+for p in players_all:
+    p_rows = [r for r in rows if r["Player"] == p]
     weighted_points = {}
+    row_data = {"Player": p, "Position": p_rows[0]["Position"] if p_rows else ""}
+    
     for stat in STATS:
-        row = player_stat_row_map.get(stat) or find_market(stat, player_rows)
+        row = player_stat_row_map.get(stat) or find_market(stat, p_rows)
         if stat == "Total Touchdowns":
-            line_val, avg_prob = get_total_touchdowns_line_and_prob_from_yes(player_rows)
+            line_val, avg_prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
         else:
             line_val = row["Line"] if row else 0.0
             avg_prob = row["AvgProb"] if row else 0.5
         pts_per_unit = DEFAULT_SCORING[stat]
         weighted_points[stat] = line_val * pts_per_unit * avg_prob
+        row_data[stat] = line_val
+        row_data[f"{stat}_prob"] = avg_prob
+    
     total_points = sum(weighted_points.values())
-    salary = rotowire_map.get(player, {}).get("salary")
-    proj_list.append({
-        "Player": player,
-        "Position": player_rows[0]["Position"] if player_rows else "",
-        "ProjectedPoints": total_points,
-        "RotowirePoints": rotowire_map.get(player, {}).get("proj_pts"),
-        "Salary": salary,
-        "Value": salary/total_points if total_points and salary else 0
-    })
+    row_data["Total Points"] = total_points
+    row_data["Salary"] = rotowire_map.get(p, {}).get("salary")
+    row_data["RotowirePoints"] = rotowire_map.get(p, {}).get("proj_pts")
+    row_data["Value"] = (total_points / row_data["Salary"] * 100) if total_points and row_data["Salary"] else 0
+    
+    df_auto.append(row_data)
 
-# -----------------------------
-# DISPLAY TOP 150 TABLE
-# -----------------------------
-df_proj = pd.DataFrame(proj_list).sort_values("ProjectedPoints", ascending=False).head(150)
-df_proj.insert(0, "Rank", range(1, len(df_proj)+1))
+df_auto = pd.DataFrame(df_auto)
+cols = ["Player", "Position", "Total Points", "Salary", "RotowirePoints", "Value"] + \
+       [s for s in STATS] + [f"{s}_prob" for s in STATS]
+df_auto = df_auto[cols].sort_values("Total Points", ascending=False).head(150)
+df_auto.insert(0, "Rank", range(1, len(df_auto)+1))
 st.subheader("Top 150 Player Projections")
-st.dataframe(df_proj)
+st.dataframe(df_auto)
