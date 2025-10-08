@@ -445,3 +445,35 @@ for stat in STATS:
 st.subheader(f"Projected Fantasy Points: {proj_pts_total:.2f}")
 st.markdown(f"**Salary:** ${player_rows[0].get('Salary',0)}")
 st.markdown(f"**Rotowire Projection:** {player_rows[0].get('ProjPoints',0.0)}")
+# -----------------------------
+# TOP 150 PLAYERS TABLE
+# -----------------------------
+st.subheader("Top 150 Players (Value & Projections)")
+
+df_full = pd.DataFrame(rows)
+# Ensure numeric columns
+df_full["ProjPoints"] = pd.to_numeric(df_full["ProjPoints"], errors='coerce').fillna(0)
+df_full["Salary"] = pd.to_numeric(df_full["Salary"], errors='coerce').fillna(0)
+
+# Merge in your total projected points from saved projections if available
+total_points_map = {p["Player"]: p["Total Points"] for p in st.session_state.projections}
+df_full["TotalPointsProjected"] = df_full["Player"].map(total_points_map).fillna(df_full["ProjPoints"])
+
+# Calculate value (salary / total projected points)
+df_full["Value"] = df_full.apply(lambda x: x["Salary"]/x["TotalPointsProjected"] if x["TotalPointsProjected"] else 0, axis=1)
+
+# Sort by total projected points descending and get top 150
+df_top150 = df_full.sort_values(by="TotalPointsProjected", ascending=False).head(150)
+
+# Select columns
+df_top150_display = df_top150[[
+    "Player", "Position", "TotalPointsProjected", "Salary", "ProjPoints",
+    "Value", "DraftKings", "FanDuel", "Caesars", "ESPNBet", "BetMGM"
+]]
+# Rename columns for display
+df_top150_display = df_top150_display.rename(columns={
+    "TotalPointsProjected": "Total Points (Projected)",
+    "ProjPoints": "Projected Points (Rotowire)"
+})
+
+st.dataframe(df_top150_display)
