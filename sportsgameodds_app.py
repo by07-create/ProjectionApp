@@ -16,8 +16,6 @@ LEAGUE_ID = "NFL"
 LIMIT = 200
 CACHE_FILE = "/odds_cache.json"
 CACHE_MAX_AGE_MINUTES = 10080  # 7 days
-ROTOWIRE_SLATE_ID = 8739
-ROTOWIRE_URL = f"https://www.rotowire.com/daily/nfl/api/players.php?slateID={ROTOWIRE_SLATE_ID}"
 
 DEFAULT_SCORING = {
     "Pass Yards": 0.04,
@@ -82,15 +80,6 @@ def fetch_api(api_key):
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching odds: {e}")
         return None
-
-def fetch_rotowire():
-    try:
-        r = requests.get(ROTOWIRE_URL, timeout=20)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.warning(f"Failed to load Rotowire data: {e}")
-        return {}
 
 def american_to_prob(odds):
     try:
@@ -253,6 +242,20 @@ if not odds_data:
     st.stop()
 
 # -----------------------------
+# FETCH ROTOWIRE DATA
+# -----------------------------
+rw_json = []
+try:
+    slate_id = st.sidebar.text_input("Rotowire Slate ID", value="8739")
+    if slate_id:
+        url = f"https://www.rotowire.com/daily/nfl/api/players.php?slateID={slate_id}"
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        rw_json = r.json()
+except Exception as e:
+    st.warning(f"Failed to load Rotowire data: {e}")
+
+# -----------------------------
 # EXTRACT PLAYER PROPS
 # -----------------------------
 rows = []
@@ -310,11 +313,34 @@ for event in odds_data:
         collect_od(odds_by_book.get("betmgm", {}).get("odds", "N/A"))
 
         avg_prob = average_odds(all_odds)
-
         try:
             market_raw = odds_item.get("marketKey") or odds_item.get("market") or json.dumps(odds_item)
         except:
             market_raw = str(odds_item)
+
+        # Default salary and proj points
+        salary = 0
+        proj_pts = 0.0
+
+        # Find Rotowire data
+        if rw_json:
+            try:
+                if isinstance(rw_json, dict):
+                    for k, p in rw_json.items():
+                        if isinstance(p, dict) and "rwID" in p:
+                            full_name_rw = f"{p.get('firstName','')} {p.get('lastName','')}".strip()
+                            if full_name_rw.lower() == player_info["name"].lower():
+                                salary = p.get("salary", 0)
+                                proj_pts = float(p.get("pts", 0))
+                elif isinstance(rw_json, list):
+                    for p in rw_json:
+                        if isinstance(p, dict):
+                            full_name_rw = f"{p.get('firstName','')} {p.get('lastName','')}".strip()
+                            if full_name_rw.lower() == player_info["name"].lower():
+                                salary = p.get("salary", 0)
+                                proj_pts = float(p.get("pts", 0))
+            except:
+                pass
 
         rows.append({
             "Player": player_info["name"],
@@ -330,35 +356,13 @@ for event in odds_data:
             "BetMGM": odds_by_book.get("betmgm", {}).get("odds", "N/A"),
             "StatID": odds_item.get("statID"),
             "SideID": odds_item.get("sideID"),
+            "Salary": salary,
+            "ProjPoints": proj_pts
         })
 
 if not rows:
     st.warning("No player prop odds found in the returned data.")
     st.stop()
-
-# -----------------------------
-# ROTOWIRE INTEGRATION
-# -----------------------------
-rw_json = fetch_rotowire()
-# Build normalized mapping
-rw_data_map = {}
-for k, p in rw_json.items():
-    rw_name = f"{p['firstName']} {p['lastName']}"
-    rw_key = ''.join(c.lower() for c in rw_name if c.isalnum())
-    rw_data_map[rw_key] = {
-        "Salary": p.get("salary", 0),
-        "ProjPoints": float(p.get("pts", 0) or 0)
-    }
-
-# Merge into rows
-for r in rows:
-    r_key = ''.join(c.lower() for c in r["Player"] if c.isalnum())
-    if r_key in rw_data_map:
-        r["Salary"] = rw_data_map[r_key]["Salary"]
-        r["ProjPoints"] = rw_data_map[r_key]["ProjPoints"]
-    else:
-        r["Salary"] = 0
-        r["ProjPoints"] = 0
 
 # -----------------------------
 # SIDEBAR CONTROLS
@@ -386,7 +390,7 @@ st.subheader(f"Prop Odds for {selected_player}")
 st.dataframe(df_odds_display)
 
 # -----------------------------
-# FANTASY PROJECTION INPUTS (SIDE-BY-SIDE + PERCENT DISPLAY)
+# FANTASY PROJECTION INPUTS
 # -----------------------------
 st.subheader("Player Projections")
 projected_stats = {}
@@ -433,19 +437,11 @@ for stat in STATS:
 # -----------------------------
 # CALCULATE PROJECTED FANTASY POINTS
 # -----------------------------
-weighted_points = {}
+proj_pts_total = 0.0
 for stat in STATS:
-    pts_per_unit = st.session_state[f"scoring__{stat}"]
-    weighted_points[stat] = projected_stats[stat] * pts_per_unit
+    pts_per_unit = st.session_state.get(f"scoring__{stat}", float(DEFAULT_SCORING[stat]))
+    proj_pts_total += projected_stats.get(stat,0) * pts_per_unit
 
-st.subheader(f"Projected Fantasy Points for {selected_player}")
-total_points = sum(weighted_points.values())
-st.metric("Total Projected Points", f"{total_points:.2f}")
-st.dataframe(pd.DataFrame.from_dict(weighted_points, orient="index", columns=["Points per Stat"]))
-
-# -----------------------------
-# PLAYER TABLE
-# -----------------------------
-st.subheader("All Player Data")
-df_all = pd.DataFrame(rows)
-st.dataframe(df_all.sort_values(["Player","Market"]))
+st.subheader(f"Projected Fantasy Points: {proj_pts_total:.2f}")
+st.markdown(f"**Salary:** ${player_rows[0].get('Salary',0)}")
+st.markdown(f"**Rotowire Projection:** {player_rows[0].get('ProjPoints',0.0)}")
