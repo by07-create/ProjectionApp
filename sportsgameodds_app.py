@@ -244,7 +244,27 @@ if not odds_data:
 # -----------------------------
 # EXTRACT PLAYER PROPS
 # -----------------------------
-# (your existing extraction logic is unchanged)
+rows = []
+for game in odds_data:
+    for prop in game.get("PlayerProps", []):
+        player_name = clean_player_name(prop.get("PlayerID") or prop.get("Player"))
+        row = {
+            "Player": player_name,
+            "Position": prop.get("Position", ""),
+            "Market": prop.get("Market", ""),
+            "MarketRaw": prop.get("MarketRaw", ""),
+            "Line": prop.get("Line"),
+            "AvgProb": prop.get("AvgProb"),
+            "DraftKings": prop.get("DraftKings"),
+            "FanDuel": prop.get("FanDuel"),
+            "Caesars": prop.get("Caesars"),
+            "ESPNBet": prop.get("ESPNBet"),
+            "BetMGM": prop.get("BetMGM"),
+            "StatID": prop.get("StatID"),
+            "SideID": prop.get("SideID")
+        }
+        rows.append(row)
+
 # -----------------------------
 # ROTOWIRE FETCH (AUTO SLATE)
 # -----------------------------
