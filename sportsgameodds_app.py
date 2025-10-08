@@ -5,6 +5,7 @@ import json
 import os
 from datetime import datetime
 from dropbox import Dropbox, files
+import io
 
 # -----------------------------
 # CONFIG
@@ -189,43 +190,11 @@ if "projections" not in st.session_state:
     st.session_state.projections = []
 
 # -----------------------------
-# SIDEBAR CONTROLS (ALWAYS VISIBLE)
+# FETCH / CACHE DATA
 # -----------------------------
-st.sidebar.title("Controls")
-slate_id_input = st.sidebar.text_input("Rotowire Slate ID", value="4105")
-use_cache = st.sidebar.checkbox("Load cached data instead of fetching API", value=True)
-
-# Always show fetch buttons in sidebar
-col1, col2 = st.sidebar.columns(2)
+use_cache = st.sidebar.checkbox("Load cached data instead of fetching API")
 odds_data = []
 
-with col1:
-    if st.button("Fetch Primary API"):
-        data = fetch_api(API_KEY_PRIMARY)
-        if data:
-            odds_data = data
-            payload = {"timestamp": datetime.now().isoformat(), "data": odds_data}
-            try:
-                dbx.files_upload(json.dumps(payload, indent=2).encode("utf-8"), CACHE_FILE, mode=files.WriteMode.overwrite)
-                st.success("Saved cache to Dropbox.")
-            except Exception as e:
-                st.error(f"Failed to save cache to Dropbox: {e}")
-
-with col2:
-    if st.button("Fetch Secondary API"):
-        data = fetch_api(API_KEY_SECONDARY)
-        if data:
-            odds_data = data
-            payload = {"timestamp": datetime.now().isoformat(), "data": odds_data}
-            try:
-                dbx.files_upload(json.dumps(payload, indent=2).encode("utf-8"), CACHE_FILE, mode=files.WriteMode.overwrite)
-                st.success("Saved cache to Dropbox.")
-            except Exception as e:
-                st.error(f"Failed to save cache to Dropbox: {e}")
-
-# -----------------------------
-# LOAD CACHE IF SELECTED
-# -----------------------------
 def load_cache_from_dropbox():
     try:
         _, res = dbx.files_download(CACHE_FILE)
@@ -237,10 +206,37 @@ def load_cache_from_dropbox():
     except Exception:
         return []
 
-if use_cache and not odds_data:
+if use_cache:
     odds_data = load_cache_from_dropbox()
     if not odds_data:
         st.warning("No cached data found in Dropbox (or cache expired). Please fetch from API.")
+else:
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Fetch Primary API"):
+            data = fetch_api(API_KEY_PRIMARY)
+            if data:
+                odds_data = data
+                payload = {"timestamp": datetime.now().isoformat(), "data": odds_data}
+                try:
+                    dbx.files_upload(json.dumps(payload, indent=2).encode("utf-8"), CACHE_FILE, mode=files.WriteMode.overwrite)
+                    st.success("Saved cache to Dropbox.")
+                except Exception as e:
+                    st.error(f"Failed to save cache to Dropbox: {e}")
+    with col2:
+        if st.button("Fetch Secondary API"):
+            data = fetch_api(API_KEY_SECONDARY)
+            if data:
+                odds_data = data
+                payload = {"timestamp": datetime.now().isoformat(), "data": odds_data}
+                try:
+                    dbx.files_upload(json.dumps(payload, indent=2).encode("utf-8"), CACHE_FILE, mode=files.WriteMode.overwrite)
+                    st.success("Saved cache to Dropbox.")
+                except Exception as e:
+                    st.error(f"Failed to save cache to Dropbox: {e}")
+
+if not odds_data and use_cache:
+    pass
 
 if not odds_data:
     st.info("Use the sidebar buttons to fetch odds from API or uncheck 'Load cached data' and fetch.")
@@ -331,6 +327,172 @@ if not rows:
     st.stop()
 
 # -----------------------------
-# The rest of your original app code remains exactly as-is
-# including: player selection, projections, calculation, top 150 leaderboard
+# SIDEBAR CONTROLS
 # -----------------------------
+st.sidebar.title("Controls")
+players = sorted(set(r["Player"] for r in rows))
+selected_player = st.sidebar.selectbox("Select a player", players)
+
+st.sidebar.subheader("Scoring Settings")
+for stat in STATS:
+    st.sidebar.number_input(
+        stat + " (pts/unit)",
+        value=float(DEFAULT_SCORING[stat]),
+        step=0.01,
+        key=f"scoring__{stat}"
+    )
+
+# -----------------------------
+# DISPLAY SELECTED PLAYER PROPS
+# -----------------------------
+player_rows = [r for r in rows if r["Player"] == selected_player]
+df_odds = pd.DataFrame(player_rows).sort_values("Market")
+df_odds_display = df_odds.drop(columns=["Position","MarketRaw"], errors="ignore")
+st.subheader(f"Prop Odds for {selected_player}")
+st.dataframe(df_odds_display)
+
+# -----------------------------
+# FANTASY PROJECTION INPUTS
+# -----------------------------
+st.subheader("Player Projections")
+projected_stats = {}
+projected_probs = {}
+player_stat_row_map = {}
+
+for stat in STATS:
+    if stat == "Total Touchdowns":
+        player_stat_row_map[stat] = get_total_touchdowns_line_and_prob_from_yes(player_rows)
+    else:
+        player_stat_row_map[stat] = find_market(stat, player_rows)
+
+for stat in STATS:
+    row = player_stat_row_map[stat]
+    if stat == "Total Touchdowns":
+        line_val = 0.5
+        avg_prob = row[1] if row else 0.5
+    else:
+        line_val = row["Line"] if row else 0.0
+        avg_prob = row["AvgProb"] if row else 0.5
+
+    col_label, col_proj, col_prob = st.columns([2, 2, 2])
+    with col_label:
+        st.markdown(f"**{stat}**")
+    with col_proj:
+        projected_stats[stat] = st.number_input(
+            f"proj_{stat}",
+            value=float(line_val),
+            step=0.1,
+            format="%.2f",
+            key=f"proj_stat__{stat}"
+        )
+    with col_prob:
+        pct_default = float(avg_prob) * 100.0
+        pct_input = st.number_input(
+            f"prob_{stat}",
+            value=round(pct_default, 2),
+            step=0.1,
+            format="%.2f",
+            key=f"proj_prob__{stat}_pct"
+        )
+        projected_probs[stat] = float(pct_input) / 100.0
+
+# -----------------------------
+# CALCULATE PROJECTED FANTASY POINTS
+# -----------------------------
+weighted_points = {}
+for stat in STATS:
+    pts_per_unit = st.session_state[f"scoring__{stat}"]
+    weighted_points[stat] = projected_stats[stat] * pts_per_unit * projected_probs[stat]
+
+total_points = sum(weighted_points.values())
+st.subheader(f"Projected Fantasy Points: {total_points:.2f}")
+st.json(weighted_points)
+
+# -----------------------------
+# SAVE / CLEAR PROJECTION
+# -----------------------------
+if st.button("Save Projection"):
+    st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
+    save_record = {
+        "Player": selected_player,
+        **{s: projected_stats[s] for s in STATS},
+        **{f"{s}_prob": projected_probs[s] for s in STATS},
+        "Position": (player_rows[0].get("Position","") if player_rows else ""),
+        "Total Points": total_points
+    }
+    st.session_state.projections.append(save_record)
+    st.success(f"Saved projection for {selected_player}.")
+
+if st.button("Clear Projection for Player"):
+    st.session_state.projections = [p for p in st.session_state.projections if p.get("Player") != selected_player]
+    st.info(f"Cleared saved projection for {selected_player}.")
+
+# -----------------------------
+# TOP 150 LEADERBOARD
+# -----------------------------
+players_all = sorted(set(r["Player"] for r in rows))
+df_auto = []
+
+for p in players_all:
+    p_rows = [r for r in rows if r["Player"] == p]
+    saved = next((x for x in st.session_state.projections if x.get("Player") == p), None)
+
+    record = {"Player": p, "Position": (p_rows[0].get("Position","") if p_rows else "")}
+
+    stat_row_map = {}
+    for stat in STATS:
+        if saved:
+            val = saved.get(stat, None)
+            prob = saved.get(f"{stat}_prob", None)
+            if val is None:
+                if stat == "Total Touchdowns":
+                    _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
+                    val = 0.5
+                else:
+                    stat_row_map[stat] = find_market(stat, p_rows)
+                    val = stat_row_map[stat]["Line"] if stat_row_map[stat] else 0.0
+                    prob = stat_row_map[stat]["AvgProb"] if stat_row_map[stat] else 0.5
+            record[stat] = val
+            record[f"{stat}_prob"] = prob
+        else:
+            if stat == "Total Touchdowns":
+                val = 0.5
+                _, prob = get_total_touchdowns_line_and_prob_from_yes(p_rows)
+            else:
+                stat_row_map[stat] = find_market(stat, p_rows)
+                val = stat_row_map[stat]["Line"] if stat_row_map[stat] else 0.0
+                prob = stat_row_map[stat]["AvgProb"] if stat_row_map[stat] else 0.5
+            record[stat] = val
+            record[f"{stat}_prob"] = prob
+
+    total_pts = sum(record[stat] * st.session_state[f"scoring__{stat}"] * record[f"{stat}_prob"] for stat in STATS)
+    record["Total Points"] = total_pts
+    df_auto.append(record)
+
+df_auto = pd.DataFrame(df_auto)
+cols = ["Player", "Total Points", "Position"] + [s for s in STATS] + [f"{s}_prob" for s in STATS]
+df_auto = df_auto[cols].sort_values("Total Points", ascending=False).head(150)
+df_auto.insert(0, "Rank", range(1, len(df_auto) + 1))
+
+# -----------------------------
+# ROTOWIRE SALARY & PROJECTION INTEGRATION
+# -----------------------------
+rotowire_slate_id = st.sidebar.text_input("Rotowire Slate ID", value="")
+
+rotowire_data = []
+if rotowire_slate_id:
+    try:
+        rotowire_url = f"https://rotowire.com/slates/{rotowire_slate_id}/export.csv"
+        r = requests.get(rotowire_url, timeout=10)
+        r.raise_for_status()
+        df_rw = pd.read_csv(io.StringIO(r.text))
+        rotowire_data = df_rw[["Player", "Salary", "ProjPoints"]].copy()
+        rotowire_data["Player"] = rotowire_data["Player"].str.strip()
+    except Exception as e:
+        st.warning(f"Failed to load Rotowire data: {e}")
+
+if not df_auto.empty and not rotowire_data == []:
+    df_auto = df_auto.merge(rotowire_data, on="Player", how="left")
+
+st.subheader("Top 150 Projected Fantasy Leaders")
+st.dataframe(df_auto)
